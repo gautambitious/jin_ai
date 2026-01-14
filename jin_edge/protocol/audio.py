@@ -7,9 +7,11 @@ No business logic, just protocol parsing and forwarding.
 
 import json
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from audio.buffer import AudioBuffer
 
+if TYPE_CHECKING:
+    from audio.player import AudioPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,7 @@ class AudioStreamHandler:
         - JSON: {"type": "stop_playback"}
 
     Usage:
-        handler = AudioStreamHandler(audio_buffer)
+        handler = AudioStreamHandler(audio_buffer, audio_player)
 
         # In WebSocket message callback:
         if isinstance(message, str):
@@ -34,16 +36,19 @@ class AudioStreamHandler:
             await handler.handle_binary_message(message)
     """
 
-    def __init__(self, audio_buffer: AudioBuffer):
+    def __init__(self, audio_buffer: AudioBuffer, audio_player: "AudioPlayer"):
         """
         Initialize audio stream handler.
 
         Args:
             audio_buffer: AudioBuffer instance to receive audio chunks
+            audio_player: AudioPlayer instance for playback control
         """
         self.audio_buffer = audio_buffer
+        self.audio_player = audio_player
         self._active_stream_id: Optional[str] = None
         self._sample_rate: int = 16000  # Default sample rate
+        self._playback_started: bool = False
 
     async def handle_json_message(self, message: str):
         """
@@ -92,9 +97,18 @@ class AudioStreamHandler:
                 logger.debug("Received empty audio chunk, ignoring")
                 return
 
+            # Start playback on first chunk
+            if not self._playback_started:
+                logger.info(f"Starting audio playback (first chunk: {len(data)} bytes)")
+                self._playback_started = True
+                self.audio_player._is_playing = True
+
             # Forward chunk to audio buffer
-            await self.audio_buffer.push(data)
-            logger.debug(f"Forwarded {len(data)} bytes to audio buffer")
+            success = await self.audio_buffer.push(data)
+            if success:
+                logger.debug(f"Forwarded {len(data)} bytes to audio buffer")
+            else:
+                logger.warning(f"Audio buffer full, dropped {len(data)} bytes")
 
         except Exception as e:
             logger.error(f"Error handling binary message: {e}")
@@ -117,6 +131,7 @@ class AudioStreamHandler:
         if self._active_stream_id and self._active_stream_id != stream_id:
             logger.info(f"Stopping existing stream {self._active_stream_id}")
             await self.audio_buffer.clear()
+            self._playback_started = False
 
         self._active_stream_id = stream_id
         self._sample_rate = sample_rate
@@ -143,13 +158,14 @@ class AudioStreamHandler:
 
         logger.info(f"Ended audio stream: {stream_id}")
         self._active_stream_id = None
+        self._playback_started = False
 
     async def _handle_stop_playback(self):
         """Handle stop_playback message."""
         logger.info("Stopping playback")
-
-        # Clear buffer and reset state
+        self.audio_player._is_playing = False
         await self.audio_buffer.clear()
+        self._playback_started = False
         self._active_stream_id = None
 
     @property

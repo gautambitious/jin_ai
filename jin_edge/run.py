@@ -27,14 +27,16 @@ class JinEdgeClient:
     """Main client that manages WebSocket connection and audio playback."""
 
     def __init__(self):
-        self.audio_buffer = AudioBuffer(max_size=env_vars.AUDIO_BUFFER_SIZE)
         self.audio_player = AudioPlayer(
             sample_rate=env_vars.AUDIO_SAMPLE_RATE,
             channels=env_vars.AUDIO_CHANNELS,
             buffer_size=env_vars.AUDIO_BUFFER_SIZE,
             chunk_size=env_vars.AUDIO_CHUNK_SIZE,
         )
-        self.protocol_handler = AudioStreamHandler(self.audio_buffer)
+        # Use the player's internal buffer directly
+        self.protocol_handler = AudioStreamHandler(
+            self.audio_player._buffer, self.audio_player
+        )
         self.ws_client: WebSocketClient | None = None
         self.running = False
 
@@ -69,42 +71,14 @@ class JinEdgeClient:
         logger.info(f"🔌 Connecting to {env_vars.WEBSOCKET_URL}...")
         await self.ws_client.connect()
 
-        # Start audio playback loop from buffer
-        logger.info("🎵 Starting audio playback from buffer...")
+        # Keep running until stopped
+        logger.info("🎵 Audio client running, waiting for audio streams...")
         self.running = True
-        await self._playback_loop()
-
-    async def _playback_loop(self):
-        """Continuously play audio from buffer."""
-        playback_started = False
-
         try:
             while self.running:
-                # Check if buffer has data
-                buffer_size = await self.audio_buffer.size()
-                if buffer_size > 0:
-                    # Get chunk from buffer
-                    chunk = await self.audio_buffer.pop(env_vars.AUDIO_CHUNK_SIZE)
-                    if chunk:
-                        # Start playback with first chunk
-                        if not playback_started:
-                            logger.info("Starting audio playback with first chunk...")
-                            await self.audio_player.play(chunk)
-                            playback_started = True
-                        else:
-                            # Feed subsequent chunks
-                            success = await self.audio_player.feed(chunk)
-                            if not success:
-                                logger.debug("Player buffer full, waiting...")
-                                await asyncio.sleep(0.01)
-                else:
-                    # No data, wait a bit
-                    await asyncio.sleep(0.01)
-
+                await asyncio.sleep(1)
         except asyncio.CancelledError:
-            logger.info("Playback loop cancelled")
-        except Exception as e:
-            logger.error(f"Error in playback loop: {e}")
+            logger.info("Main loop cancelled")
 
     async def stop(self):
         """Stop the audio client."""
