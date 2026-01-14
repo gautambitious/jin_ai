@@ -1,0 +1,11 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.10.0  # Use the latest stable version of black
+    hooks:
+      - id: black
+        name: Format Python code with black
+  - repo: https://github.com/pre-commit/mirrors-isort
+    rev: 'v5.10.1'  # Use the revision sha / tag you want to point at
+    hooks:
+      - id: isort
+        args: ["--profile=black"]

@@ -1,0 +1,12 @@
+asgiref==3.11.0
+Django==6.0.1
+psycopg2==2.9.11
+python-dotenv==1.2.1
+sqlparse==0.5.5
+
+# Agent System
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langgraph>=0.0.20
+celery>=5.3.0
+redis>=5.0.0
