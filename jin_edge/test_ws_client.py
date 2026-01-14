@@ -51,7 +51,7 @@ class TestWebSocketClient:
         """Run the WebSocket client test."""
         # Create client
         self.client = WebSocketClient(
-            url="wss://echo.websocket.org",
+            url="ws://127.0.0.1:8000/ws/audio/",
             on_connect=self.on_connect,
             on_disconnect=self.on_disconnect,
             on_message=self.on_message,
