@@ -210,12 +210,51 @@ def create_porcupine_detector(
 
 
 def main():
-    """Test Porcupine detector."""
-    import time
+    """Test Porcupine detector with actual microphone input."""
+    import sys
+    from pathlib import Path
+    
+    # Add parent directory to path to import env_vars
+    parent_dir = Path(__file__).resolve().parent.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+    
     import env_vars
+    
+    # Import MicStream for actual audio input
+    try:
+        from audio.mic_stream import MicStream
+        from audio.device import list_input_devices, find_usb_mic
+    except ImportError:
+        sys.path.insert(0, str(parent_dir))
+        from audio.mic_stream import MicStream
+        from audio.device import list_input_devices, find_usb_mic
 
     def on_wake_word():
         print("\n🎤 ⚡ WAKE WORD DETECTED BY PORCUPINE! ⚡\n")
+
+    # Auto-detect microphone device
+    print("Detecting audio input devices...")
+    input_devices = list_input_devices()
+    
+    if not input_devices:
+        print("❌ No input devices found!")
+        return
+    
+    print("\nAvailable input devices:")
+    for dev in input_devices:
+        print(f"  [{dev['index']}] {dev['name']} - {dev['channels']} ch, {dev['sample_rate']} Hz")
+    
+    # Try to find USB mic, otherwise use default
+    usb_mic = find_usb_mic()
+    if usb_mic:
+        mic_device = usb_mic['index']
+        print(f"\n✓ Using USB microphone: {usb_mic['name']}")
+    else:
+        mic_device = None
+        print("\n✓ Using default input device")
+    
+    print()
 
     # Create detector
     try:
@@ -238,19 +277,39 @@ def main():
     print(f"Model: {os.path.basename(detector.model_path)}")
     print(f"Sample rate: {detector.sample_rate} Hz")
     print(f"Frame length: {detector.frame_length} samples")
+    print("\n🎙️  Recording from microphone...")
     print("Speak 'Hey Jin' to test detection")
     print("Press Ctrl+C to stop\n")
 
-    # Simulate audio with silence (in real use, get from mic)
-    silent_chunk = b"\x00\x00" * 512  # 512 samples
+    # Create mic stream with detected device
+    try:
+        mic = MicStream(
+            sample_rate=detector.sample_rate,
+            channels=1,
+            chunk_duration_ms=30,
+            device=mic_device
+        )
+    except Exception as e:
+        print(f"❌ Failed to create mic stream: {e}")
+        print("\nTrying with default device...")
+        try:
+            mic = MicStream(
+                sample_rate=detector.sample_rate,
+                channels=1,
+                chunk_duration_ms=30,
+                device=None
+            )
+        except Exception as e2:
+            print(f"❌ Still failed: {e2}")
+            detector.cleanup()
+            return
 
     try:
         chunk_count = 0
-        while True:
-            # In real use, this would be actual mic audio
-            event = detector.process_chunk(silent_chunk)
+        for chunk in mic.stream():
+            event = detector.process_chunk(chunk)
 
-            if event or chunk_count % 100 == 0:
+            if event or chunk_count % 50 == 0:
                 status = "🎧 Listening..." if detector.is_listening else "💤 Paused"
                 print(f"[{chunk_count:04d}] {status}", end="")
                 if event:
@@ -259,10 +318,12 @@ def main():
                     print()
 
             chunk_count += 1
-            time.sleep(0.03)  # 30ms chunks
 
     except KeyboardInterrupt:
         print("\n\n✅ Stopped by user")
+    except Exception as e:
+        print(f"\n❌ Error during detection: {e}")
+        logger.exception("Detection error")
     finally:
         detector.cleanup()
 

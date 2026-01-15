@@ -109,7 +109,7 @@ class JinEdgeClient:
                 sample_rate=env_vars.AUDIO_SAMPLE_RATE,
                 channels=env_vars.AUDIO_CHANNELS,
                 silence_threshold=500,
-                silence_duration_ms=800,
+                # silence_duration_ms uses env_vars.SILENCE_DURATION_MS (default 3000ms)
             )
             await self.wakeword_streamer.start()
 
