@@ -15,6 +15,24 @@ WEBSOCKET_URL = os.getenv("WEBSOCKET_URL", "ws://localhost:8000/ws/audio")
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# Push-to-Talk Mode
+ENABLE_PUSH_TO_TALK = os.getenv("ENABLE_PUSH_TO_TALK", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
+# Porcupine Wake Word Settings
+PORCUPINE_ACCESS_KEY = os.getenv("PORCUPINE_ACCESS_KEY", "")
+PORCUPINE_MODEL_PATH = os.getenv(
+    "PORCUPINE_MODEL_PATH", os.path.join(BASE_DIR, "Hey-Jin_en_mac_v4_0_0.ppn")
+)
+
+# Silence Detection
+SILENCE_DURATION_MS = int(
+    os.getenv("SILENCE_DURATION_MS", "3000")
+)  # Default: 3 seconds
+
 # Audio Settings (from JSON)
 _AUDIO_DEFAULTS = {
     "sample_rate": 16000,
@@ -49,4 +67,8 @@ __all__ = [
     "WS_MAX_RETRIES",
     "WS_INITIAL_RETRY_DELAY",
     "WS_MAX_RETRY_DELAY",
+    "ENABLE_PUSH_TO_TALK",
+    "PORCUPINE_ACCESS_KEY",
+    "PORCUPINE_MODEL_PATH",
+    "SILENCE_DURATION_MS",
 ]
