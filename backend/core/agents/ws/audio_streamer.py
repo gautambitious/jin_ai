@@ -10,6 +10,7 @@ import logging
 from typing import Optional, AsyncIterator
 
 from agents.ws.protocol import audio_start, audio_end, stop_playback
+from agents.constants import AudioFormat
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class AudioStreamer:
         self,
         websocket,
         stream_id: str,
-        sample_rate: int = 16000,
+        sample_rate: int = AudioFormat.DEFAULT_SAMPLE_RATE,
         channels: int = 1,
     ):
         """
@@ -40,7 +41,7 @@ class AudioStreamer:
         Args:
             websocket: WebSocket connection (must have async send() method)
             stream_id: Unique identifier for this audio stream
-            sample_rate: Audio sample rate in Hz (default: 16000)
+            sample_rate: Audio sample rate in Hz (default: 24000)
             channels: Number of audio channels (default: 1)
         """
         self.websocket = websocket

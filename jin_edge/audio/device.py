@@ -153,15 +153,15 @@ def select_device(index: Optional[int] = None) -> Dict:
 def find_usb_mic() -> Optional[Dict]:
     """
     Automatically detect a USB microphone.
-    
+
     Looks for common USB audio interface patterns in device names.
     Useful for Raspberry Pi where USB mics are commonly used.
-    
+
     Returns:
         Device dict if USB mic found, None otherwise
     """
     input_devices = list_input_devices()
-    
+
     # Common USB audio device name patterns
     usb_patterns = [
         "usb",
@@ -169,13 +169,13 @@ def find_usb_mic() -> Optional[Dict]:
         "plughw:",  # ALSA plug device
         "card",  # Generic card reference
     ]
-    
+
     for device in input_devices:
         name_lower = device["name"].lower()
         for pattern in usb_patterns:
             if pattern in name_lower:
                 return device
-    
+
     return None
 
 
@@ -262,7 +262,7 @@ def print_input_devices():
         print(f"Default device: {default['name']}")
     except:
         pass
-    
+
     usb_mic = find_usb_mic()
     if usb_mic:
         print(f"USB microphone detected: {usb_mic['name']}")

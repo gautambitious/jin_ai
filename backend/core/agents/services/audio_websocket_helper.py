@@ -32,7 +32,7 @@ class AudioWebSocketHelper:
     def __init__(
         self,
         websocket,
-        sample_rate: int = 16000,
+        sample_rate: int = AudioFormat.DEFAULT_SAMPLE_RATE,
         channels: int = 1,
         tts_service: Optional[TTSService] = None,
     ):

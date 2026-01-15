@@ -5,11 +5,12 @@ No delays or WebSocket logic - pure data chunking.
 """
 
 from typing import Iterator
+from agents.constants import AudioFormat
 
 
 def chunk_audio(
     audio_bytes: bytes,
-    sample_rate: int = 16000,
+    sample_rate: int = AudioFormat.DEFAULT_SAMPLE_RATE,
     chunk_duration_ms: int = 20,
     bytes_per_sample: int = 2,
 ) -> Iterator[bytes]:
@@ -18,7 +19,7 @@ def chunk_audio(
 
     Args:
         audio_bytes: Raw PCM audio bytes
-        sample_rate: Sample rate in Hz (default: 16000)
+        sample_rate: Sample rate in Hz (default: 24000)
         chunk_duration_ms: Chunk duration in milliseconds (default: 20ms)
         bytes_per_sample: Bytes per sample - 2 for PCM16 (default: 2)
 
@@ -27,12 +28,12 @@ def chunk_audio(
         (last chunk may be smaller)
 
     Example:
-        >>> audio = b'\\x00' * 32000  # 1 second at 16kHz
-        >>> chunks = list(chunk_audio(audio, 16000, 20))
+        >>> audio = b'\\x00' * 48000  # 1 second at 24kHz
+        >>> chunks = list(chunk_audio(audio, 24000, 20))
         >>> len(chunks)
         50  # 1000ms / 20ms = 50 chunks
         >>> len(chunks[0])
-        640  # 16000 * 0.02 * 2 bytes = 640 bytes
+        960  # 24000 * 0.02 * 2 bytes = 960 bytes
     """
     if not audio_bytes:
         return
@@ -97,7 +98,7 @@ def chunk_audio_fixed_size(
 
 
 def calculate_chunk_size(
-    sample_rate: int = 16000,
+    sample_rate: int = AudioFormat.DEFAULT_SAMPLE_RATE,
     chunk_duration_ms: int = 20,
     bytes_per_sample: int = 2,
 ) -> int:
@@ -105,7 +106,7 @@ def calculate_chunk_size(
     Calculate the chunk size in bytes for a given duration.
 
     Args:
-        sample_rate: Sample rate in Hz (default: 16000)
+        sample_rate: Sample rate in Hz (default: 24000)
         chunk_duration_ms: Chunk duration in milliseconds (default: 20ms)
         bytes_per_sample: Bytes per sample - 2 for PCM16 (default: 2)
 
@@ -133,7 +134,7 @@ def calculate_chunk_size(
 
 def calculate_chunk_count(
     audio_bytes: bytes,
-    sample_rate: int = 16000,
+    sample_rate: int = AudioFormat.DEFAULT_SAMPLE_RATE,
     chunk_duration_ms: int = 20,
     bytes_per_sample: int = 2,
 ) -> int:
@@ -142,7 +143,7 @@ def calculate_chunk_count(
 
     Args:
         audio_bytes: Raw PCM audio bytes
-        sample_rate: Sample rate in Hz (default: 16000)
+        sample_rate: Sample rate in Hz (default: 24000)
         chunk_duration_ms: Chunk duration in milliseconds (default: 20ms)
         bytes_per_sample: Bytes per sample - 2 for PCM16 (default: 2)
 

@@ -213,14 +213,14 @@ def main():
     """Test Porcupine detector with actual microphone input."""
     import sys
     from pathlib import Path
-    
+
     # Add parent directory to path to import env_vars
     parent_dir = Path(__file__).resolve().parent.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    
+
     import env_vars
-    
+
     # Import MicStream for actual audio input
     try:
         from audio.mic_stream import MicStream
@@ -236,24 +236,26 @@ def main():
     # Auto-detect microphone device
     print("Detecting audio input devices...")
     input_devices = list_input_devices()
-    
+
     if not input_devices:
         print("❌ No input devices found!")
         return
-    
+
     print("\nAvailable input devices:")
     for dev in input_devices:
-        print(f"  [{dev['index']}] {dev['name']} - {dev['channels']} ch, {dev['sample_rate']} Hz")
-    
+        print(
+            f"  [{dev['index']}] {dev['name']} - {dev['channels']} ch, {dev['sample_rate']} Hz"
+        )
+
     # Try to find USB mic, otherwise use default
     usb_mic = find_usb_mic()
     if usb_mic:
-        mic_device = usb_mic['index']
+        mic_device = usb_mic["index"]
         print(f"\n✓ Using USB microphone: {usb_mic['name']}")
     else:
         mic_device = None
         print("\n✓ Using default input device")
-    
+
     print()
 
     # Create detector
@@ -287,7 +289,7 @@ def main():
             sample_rate=detector.sample_rate,
             channels=1,
             chunk_duration_ms=30,
-            device=mic_device
+            device=mic_device,
         )
     except Exception as e:
         print(f"❌ Failed to create mic stream: {e}")
@@ -297,7 +299,7 @@ def main():
                 sample_rate=detector.sample_rate,
                 channels=1,
                 chunk_duration_ms=30,
-                device=None
+                device=None,
             )
         except Exception as e2:
             print(f"❌ Still failed: {e2}")

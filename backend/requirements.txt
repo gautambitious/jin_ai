@@ -4,6 +4,10 @@ psycopg2==2.9.11
 python-dotenv==1.2.1
 sqlparse==0.5.5
 
+# WebSocket/Channels
+channels==4.3.2
+channels-redis==4.3.0
+
 # Agent System
 langchain>=0.1.0
 langchain-openai>=0.0.5

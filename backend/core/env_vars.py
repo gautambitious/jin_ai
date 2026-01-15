@@ -25,6 +25,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # API Keys
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 DEEPGRAM_TTS_MODEL = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-odysseus-en")
+DEEPGRAM_STT_MODEL = os.getenv("DEEPGRAM_STT_MODEL", "nova-3")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
 
@@ -43,6 +44,7 @@ __all__ = [
     "DB_PORT",
     "DEEPGRAM_API_KEY",
     "DEEPGRAM_TTS_MODEL",
+    "DEEPGRAM_STT_MODEL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
     "CELERY_BROKER_URL",

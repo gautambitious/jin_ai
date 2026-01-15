@@ -50,12 +50,14 @@ class Command(BaseCommand):
             ]
 
             # Run Daphne
-            CommandLineInterface.entrypoint()
+            cli = CommandLineInterface()
+            cli.run(sys.argv[1:])
 
-        except ImportError:
+        except ImportError as e:
             self.stdout.write(
                 self.style.ERROR(
-                    "Daphne is not installed. Install it with: pip install daphne"
+                    f"Daphne is not installed or import failed: {e}\n"
+                    "Install it with: pip install daphne"
                 )
             )
             sys.exit(1)
