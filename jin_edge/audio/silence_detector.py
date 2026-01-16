@@ -3,9 +3,12 @@ Lightweight silence detector for PCM audio.
 Detects speech start/end based on RMS energy level.
 """
 
+import logging
 import struct
 from typing import Callable, Optional
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechEvent(Enum):
@@ -50,6 +53,8 @@ class SilenceDetector:
         chunk_duration_ms: int = 30,
         on_speech_start: Optional[Callable[[], None]] = None,
         on_speech_end: Optional[Callable[[], None]] = None,
+        use_relative_threshold: bool = False,
+        relative_threshold_ratio: float = 0.35,
     ):
         """
         Initialize silence detector.
@@ -62,6 +67,9 @@ class SilenceDetector:
             chunk_duration_ms: Expected chunk duration in ms (default: 30)
             on_speech_start: Callback when speech starts
             on_speech_end: Callback when speech ends
+            use_relative_threshold: Use relative energy threshold instead of absolute (default: False)
+            relative_threshold_ratio: When using relative threshold, the ratio of baseline energy
+                                     below which audio is considered silence (default: 0.35 = 35%)
         """
         self.sample_rate = sample_rate
         self.silence_threshold = silence_threshold
@@ -77,9 +85,31 @@ class SilenceDetector:
         self._silence_chunk_count = 0
         self._speech_chunk_count = 0
 
+        # Relative threshold mode
+        self.use_relative_threshold = use_relative_threshold
+        self.relative_threshold_ratio = relative_threshold_ratio
+        self._baseline_energy: Optional[float] = None
+        self._relative_silence_threshold: Optional[float] = None
+
         # Callbacks
         self.on_speech_start = on_speech_start
         self.on_speech_end = on_speech_end
+
+    def set_baseline_energy(self, energy: float):
+        """
+        Set the baseline energy level for relative threshold detection.
+        Call this after wake word is detected to establish the reference level.
+
+        Args:
+            energy: The baseline RMS energy level
+        """
+        self._baseline_energy = energy
+        if self.use_relative_threshold and energy > 0:
+            self._relative_silence_threshold = energy * self.relative_threshold_ratio
+            logger.debug(
+                f"Set baseline energy: {energy:.1f}, "
+                f"relative silence threshold: {self._relative_silence_threshold:.1f}"
+            )
 
     def process(self, pcm_bytes: bytes) -> Optional[SpeechEvent]:
         """
@@ -97,8 +127,16 @@ class SilenceDetector:
         # Calculate RMS energy
         rms = self._calculate_rms(pcm_bytes)
 
+        # Determine which threshold to use
+        if self.use_relative_threshold and self._relative_silence_threshold is not None:
+            silence_threshold = self._relative_silence_threshold
+            speech_threshold = self._relative_silence_threshold * 1.2
+        else:
+            silence_threshold = self.silence_threshold
+            speech_threshold = self.speech_threshold
+
         # Update state based on RMS
-        if rms < self.silence_threshold:
+        if rms < silence_threshold:
             # Audio is silent
             self._silence_chunk_count += 1
             self._speech_chunk_count = 0
@@ -113,7 +151,7 @@ class SilenceDetector:
                     self.on_speech_end()
                 return SpeechEvent.SPEECH_ENDED
 
-        elif rms > self.speech_threshold:
+        elif rms > speech_threshold:
             # Audio has speech
             self._speech_chunk_count += 1
             self._silence_chunk_count = 0
@@ -176,6 +214,13 @@ class SilenceDetector:
         self._is_speaking = False
         self._silence_chunk_count = 0
         self._speech_chunk_count = 0
+        # Don't reset baseline energy - it should persist across sessions
+        # unless explicitly cleared with clear_baseline()
+
+    def clear_baseline(self):
+        """Clear the baseline energy level."""
+        self._baseline_energy = None
+        self._relative_silence_threshold = None
 
     @property
     def is_speaking(self) -> bool:

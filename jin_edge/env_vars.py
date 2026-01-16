@@ -30,8 +30,19 @@ PORCUPINE_MODEL_PATH = os.getenv(
 
 # Silence Detection
 SILENCE_DURATION_MS = int(
-    os.getenv("SILENCE_DURATION_MS", "3000")
-)  # Default: 3 seconds
+    os.getenv("SILENCE_DURATION_MS", "2000")
+)  # Default: 2 seconds
+
+# Listening Timeout - Maximum time to listen after wake word (in seconds)
+LISTENING_TIMEOUT_SECONDS = int(
+    os.getenv("LISTENING_TIMEOUT_SECONDS", "10")
+)  # Default: 10 seconds
+
+# Relative Silence Threshold - Percentage drop from wake word energy level
+# If energy drops below this percentage of wake word level, consider it silence
+RELATIVE_SILENCE_THRESHOLD = float(
+    os.getenv("RELATIVE_SILENCE_THRESHOLD", "0.35")
+)  # Default: 35% (i.e., 65% drop)
 
 # Audio Settings (from JSON)
 _AUDIO_DEFAULTS = {
@@ -92,6 +103,8 @@ __all__ = [
     "PORCUPINE_ACCESS_KEY",
     "PORCUPINE_MODEL_PATH",
     "SILENCE_DURATION_MS",
+    "LISTENING_TIMEOUT_SECONDS",
+    "RELATIVE_SILENCE_THRESHOLD",
     "LED_CONFIG",
     "LED_AUTO_OFF_TIMEOUT",
 ]

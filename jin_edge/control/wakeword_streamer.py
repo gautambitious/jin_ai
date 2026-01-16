@@ -13,6 +13,7 @@ from audio.mic_stream import MicStream
 from audio.silence_detector import SilenceDetector, SpeechEvent
 from wakeword.base import WakeWordEvent, WakeWordDetector
 from ws.client import WebSocketClient
+import env_vars
 
 if TYPE_CHECKING:
     from led.controller import LEDController
@@ -20,7 +21,6 @@ if TYPE_CHECKING:
 # Try to import Porcupine, fall back to stub
 try:
     from wakeword.porcupine_detector import PorcupineDetector
-    import env_vars
 
     HAS_PORCUPINE = True
 except ImportError:
@@ -70,6 +70,9 @@ class WakeWordStreamer:
         channels: int = 1,
         silence_threshold: float = 500.0,
         silence_duration_ms: Optional[int] = None,
+        listening_timeout_seconds: Optional[int] = None,
+        use_relative_silence: Optional[bool] = None,
+        relative_silence_threshold: Optional[float] = None,
         led_controller: Optional["LEDController"] = None,
     ):
         """
@@ -82,8 +85,11 @@ class WakeWordStreamer:
             mic_stream: Optional MicStream instance (creates one if None)
             sample_rate: Audio sample rate in Hz (default: 16000)
             channels: Number of audio channels (default: 1 for mono)
-            silence_threshold: RMS threshold for silence detection
-            silence_duration_ms: Milliseconds of silence before stopping (default: from env_vars.SILENCE_DURATION_MS)
+            silence_threshold: RMS threshold for silence detection (used as fallback)
+            silence_duration_ms: Milliseconds of silence before stopping (default: from env_vars)
+            listening_timeout_seconds: Maximum seconds to listen after wake word (default: from env_vars)
+            use_relative_silence: Use relative energy threshold based on wake word level (default: True)
+            relative_silence_threshold: Ratio of wake word energy for silence threshold (default: from env_vars)
             led_controller: Optional LED controller for visual feedback
         """
         self.ws_client = ws_client
@@ -96,6 +102,20 @@ class WakeWordStreamer:
         if silence_duration_ms is None:
             silence_duration_ms = env_vars.SILENCE_DURATION_MS
         self.silence_duration_ms = silence_duration_ms
+
+        # Get listening timeout from env_vars if not provided
+        if listening_timeout_seconds is None:
+            listening_timeout_seconds = env_vars.LISTENING_TIMEOUT_SECONDS
+        self.listening_timeout_seconds = listening_timeout_seconds
+
+        # Get relative silence settings from env_vars if not provided
+        if use_relative_silence is None:
+            use_relative_silence = True  # Enable by default
+        self.use_relative_silence = use_relative_silence
+
+        if relative_silence_threshold is None:
+            relative_silence_threshold = env_vars.RELATIVE_SILENCE_THRESHOLD
+        self.relative_silence_threshold = relative_silence_threshold
 
         # Create mic stream
         self.mic_stream = mic_stream or MicStream(
@@ -142,6 +162,8 @@ class WakeWordStreamer:
             silence_duration_ms=silence_duration_ms,
             on_speech_start=None,  # We'll handle in process loop
             on_speech_end=None,
+            use_relative_threshold=use_relative_silence,
+            relative_threshold_ratio=relative_silence_threshold,
         )
 
         # State management
@@ -150,6 +172,8 @@ class WakeWordStreamer:
         self._stream_task: Optional[asyncio.Task] = None
         self._audio_buffer = []  # Buffer all chunks from wake word to silence
         self._chunk_duration_ms = 30  # Each chunk is ~30ms
+        self._streaming_start_time: Optional[float] = None
+        self._wake_word_energy_samples = []  # Store energy samples during wake word detection
 
     async def start(self):
         """
@@ -218,10 +242,20 @@ class WakeWordStreamer:
     async def _handle_listening_chunk(self, chunk: bytes):
         """
         Process audio chunk while listening for wake word.
+        Tracks energy levels to establish baseline for relative silence detection.
 
         Args:
             chunk: PCM audio bytes
         """
+        # Track energy levels during listening phase (for baseline)
+        rms = self.silence_detector._calculate_rms(chunk)
+        self._wake_word_energy_samples.append(rms)
+        
+        # Keep only recent samples (last 2 seconds worth)
+        max_samples = int(2000 / self._chunk_duration_ms)
+        if len(self._wake_word_energy_samples) > max_samples:
+            self._wake_word_energy_samples.pop(0)
+
         # Check for wake word
         event = self.wake_word_detector.process_chunk(chunk)
 
@@ -233,6 +267,7 @@ class WakeWordStreamer:
         """
         Process audio chunk while actively streaming.
         Buffers chunks instead of sending immediately.
+        Checks for timeout and silence conditions.
 
         Args:
             chunk: PCM audio bytes
@@ -240,6 +275,16 @@ class WakeWordStreamer:
         try:
             # Buffer the audio chunk
             self._audio_buffer.append(chunk)
+
+            # Check for hard timeout
+            if self._streaming_start_time is not None:
+                elapsed = asyncio.get_event_loop().time() - self._streaming_start_time
+                if elapsed >= self.listening_timeout_seconds:
+                    logger.info(
+                        f"⏱️  Listening timeout reached ({self.listening_timeout_seconds}s), stopping"
+                    )
+                    await self._stop_streaming()
+                    return
 
             # Check for silence
             event = self.silence_detector.process(chunk)
@@ -259,17 +304,31 @@ class WakeWordStreamer:
             return
 
         try:
+            # Calculate baseline energy from recent samples
+            if self._wake_word_energy_samples and self.use_relative_silence:
+                # Use average of recent energy levels as baseline
+                baseline_energy = sum(self._wake_word_energy_samples) / len(
+                    self._wake_word_energy_samples
+                )
+                self.silence_detector.set_baseline_energy(baseline_energy)
+                logger.info(
+                    f"Set baseline energy from wake word: {baseline_energy:.1f} RMS"
+                )
+
             # Reset detectors
             self.silence_detector.reset()
             self.wake_word_detector.stop_listening()
 
-            # Initialize audio buffer
+            # Initialize audio buffer and start time
             self._audio_buffer = []
+            self._streaming_start_time = asyncio.get_event_loop().time()
 
             # Update state
             self._is_streaming = True
-            logger.info("🔴 Started buffering audio")
-            
+            logger.info(
+                f"🔴 Started buffering audio (timeout: {self.listening_timeout_seconds}s)"
+            )
+
             # Set LED to listening state
             if self.led_controller:
                 await self.led_controller.set_listening()
@@ -286,6 +345,7 @@ class WakeWordStreamer:
         try:
             # Update state first
             self._is_streaming = False
+            self._streaming_start_time = None
 
             # Calculate how many chunks to trim (silence duration)
             chunks_to_trim = int(self.silence_duration_ms / self._chunk_duration_ms)
@@ -332,6 +392,8 @@ class WakeWordStreamer:
 
             # Reset detectors and resume wake word listening
             self.silence_detector.reset()
+            self.silence_detector.clear_baseline()  # Clear baseline for next session
+            self._wake_word_energy_samples = []  # Clear energy samples
             self.wake_word_detector.start_listening()
             
             # Turn off LED
