@@ -11,6 +11,9 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 from agents.services.stt_service import STTService
+from agents.voice_router import create_voice_router
+from agents.services.websocket_tts_broadcaster import broadcast_tts_message
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -59,14 +62,24 @@ class STTConsumer(AsyncWebsocketConsumer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.stt_service = None
+        self.voice_router = None
         self.session_id = None
+        self.pending_final_transcripts = []
 
     async def connect(self):
         """Handle WebSocket connection"""
         self.session_id = self.scope["url_route"]["kwargs"].get("session_id", "unknown")
         await self.accept()
 
-        logger.info(f"STT WebSocket connected: session={self.session_id}")
+        # Initialize voice router for this session
+        try:
+            self.voice_router = await sync_to_async(create_voice_router)()
+            logger.info(
+                f"STT WebSocket connected with VoiceRouter: session={self.session_id}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize voice router: {e}", exc_info=True)
+            self.voice_router = None
 
         await self.send(
             text_data=json.dumps(
@@ -153,10 +166,11 @@ class STTConsumer(AsyncWebsocketConsumer):
 
             # Define transcript callback
             def on_transcript(text, metadata):
-                """Send transcript to client"""
+                """Send transcript to client and route to agent/LLM"""
                 # Note: This runs in a thread, need to use async_to_sync
                 from asgiref.sync import async_to_sync
 
+                # Send transcript to client
                 async_to_sync(self.send)(
                     text_data=json.dumps(
                         {
@@ -170,6 +184,72 @@ class STTConsumer(AsyncWebsocketConsumer):
                         }
                     )
                 )
+
+                # If this is a final transcript, route it to agents/LLM
+                is_final = metadata.get("is_final", False)
+                speech_final = metadata.get("speech_final", False)
+
+                if is_final or speech_final:
+                    logger.info(f"Final transcript received: {text}")
+
+                    # Process with voice router
+                    if self.voice_router:
+                        try:
+                            # Add metadata for routing
+                            routing_metadata = {
+                                "confidence": metadata.get("confidence", 0),
+                                "duration": metadata.get("duration", 0),
+                                "timestamp": time.time(),
+                                "is_final": is_final,
+                                "speech_final": speech_final,
+                            }
+
+                            # Process transcript and get response
+                            response = async_to_sync(
+                                self.voice_router.process_transcript
+                            )(
+                                transcript=text,
+                                session_id=self.session_id,
+                                metadata=routing_metadata,
+                            )
+
+                            logger.info(f"Agent/LLM response: {response}")
+
+                            # Send response back to client
+                            async_to_sync(self.send)(
+                                text_data=json.dumps(
+                                    {
+                                        "type": "agent_response",
+                                        "response": response.get("response"),
+                                        "route": response.get("route"),
+                                        "agent_name": response.get("agent_name"),
+                                        "session_id": response.get("session_id"),
+                                        "original_transcript": text,
+                                    }
+                                )
+                            )
+
+                            # Broadcast response via TTS to all connected clients
+                            response_text = response.get("response", "")
+                            if response_text:
+                                try:
+                                    async_to_sync(broadcast_tts_message)(response_text)
+                                    logger.info(f"Broadcasted TTS response: {response_text[:50]}...")
+                                except Exception as tts_error:
+                                    logger.error(f"Error broadcasting TTS: {tts_error}", exc_info=True)
+
+                        except Exception as e:
+                            logger.error(
+                                f"Error routing transcript: {e}", exc_info=True
+                            )
+                            async_to_sync(self.send)(
+                                text_data=json.dumps(
+                                    {
+                                        "type": "error",
+                                        "message": f"Error processing request: {str(e)}",
+                                    }
+                                )
+                            )
 
             def on_error(error_message):
                 """Send error to client"""

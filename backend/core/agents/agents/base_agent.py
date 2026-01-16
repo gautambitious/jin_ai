@@ -1,10 +1,11 @@
 """Base agent class with common logic."""
 
-from typing import Dict, Any, List
-from langchain.agents import AgentExecutor, create_openai_functions_agent
+from typing import Dict, Any, List, Optional
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_core.tools import BaseTool
+from langchain_core.runnables import Runnable
 from abc import ABC, abstractmethod
 
 
@@ -65,17 +66,25 @@ class BaseCustomAgent(ABC):
             ]
         )
 
-    def _create_executor(self) -> AgentExecutor:
+    def _create_executor(self) -> Runnable:
         """
         Create the agent executor.
 
         Subclasses should NOT override this.
 
         Returns:
-            AgentExecutor instance
+            Runnable agent instance
         """
-        agent = create_openai_functions_agent(self.llm, self.tools, self.prompt)
-        return AgentExecutor(agent=agent, tools=self.tools, verbose=True)
+        # Convert prompt to system message if needed
+        system_message = self.PROMPT_TEMPLATE
+        
+        # Use create_agent with new signature
+        agent = create_agent(
+            self.llm,
+            self.tools,
+            system_prompt=system_message
+        )
+        return agent
 
     def execute(self, user_input: str) -> Dict[str, Any]:
         """
@@ -88,16 +97,20 @@ class BaseCustomAgent(ABC):
             Agent's response dictionary
         """
         if not self.executor:
-            return {"error": "No tools available for this agent"}
+            return {"error": "No tools available for this agent", "output": "No tools configured"}
 
-        return self.executor.invoke({"input": user_input})
+        try:
+            result = self.executor.invoke({"input": user_input})
+            return result if isinstance(result, dict) else {"output": str(result)}
+        except Exception as e:
+            return {"error": str(e), "output": f"Error: {str(e)}"}
 
-    def get_executor(self) -> AgentExecutor:
+    def get_executor(self) -> Optional[Runnable]:
         """
         Get the agent executor for registry.
 
         Returns:
-            AgentExecutor instance
+            Runnable agent instance
         """
         return self.executor
 

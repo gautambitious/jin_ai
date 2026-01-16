@@ -6,7 +6,7 @@ from .agents_registry import agents_registry
 from .tools import ALL_TOOLS
 from .agents import ALL_AGENTS
 from langchain_openai import ChatOpenAI
-from ..env_vars import OPENAI_API_KEY, OPENAI_MODEL
+from env_vars import OPENAI_API_KEY, OPENAI_MODEL
 
 
 class AgentSystem:
@@ -79,13 +79,14 @@ class AgentSystem:
                 tags=tags,
             )
 
-    def execute(self, agent_name: str, command: str) -> str:
+    def execute(self, agent_name: str, command: str, voice_mode: bool = False) -> str:
         """
         Execute a command using a specific agent.
 
         Args:
             agent_name: Name of the agent to use
             command: Text command from the user
+            voice_mode: If True, optimize response for voice output
 
         Returns:
             Response from the agent
@@ -95,7 +96,59 @@ class AgentSystem:
             raise ValueError(f"Agent '{agent_name}' not found")
 
         result = agent_executor.invoke({"input": command})
-        return result.get("output", str(result))
+        response = result.get("output", str(result))
+
+        # If voice mode, ensure response is concise
+        if voice_mode:
+            response = self._make_voice_friendly(response)
+
+        return response
+
+    def _make_voice_friendly(self, text: str, max_sentences: int = 3) -> str:
+        """
+        Make text more voice-friendly by shortening and simplifying.
+
+        Args:
+            text: Original text
+            max_sentences: Maximum number of sentences
+
+        Returns:
+            Voice-friendly version
+        """
+        import re
+
+        # Remove markdown formatting
+        text = text.replace("**", "").replace("*", "").replace("#", "")
+        text = text.replace("```", "").replace("`", "")
+
+        # Split into sentences
+        sentences = re.split(r"[.!?]+", text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # Limit to max_sentences
+        if len(sentences) > max_sentences:
+            text = ". ".join(sentences[:max_sentences]) + "."
+        else:
+            text = ". ".join(sentences) + "." if sentences else text
+
+        # Remove bullet points and convert to natural speech
+        lines = text.split("\n")
+        natural_lines = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith("-") or line.startswith("•"):
+                line = line[1:].strip()
+            if line:
+                natural_lines.append(line)
+
+        text = " ".join(natural_lines)
+
+        # Ensure not too long (approximate word limit for voice)
+        words = text.split()
+        if len(words) > 50:  # ~15-20 seconds of speech
+            text = " ".join(words[:50]) + "..."
+
+        return text
 
     def get_available_tools(self):
         """Get list of all available tools."""

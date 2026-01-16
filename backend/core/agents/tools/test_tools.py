@@ -1,6 +1,6 @@
 """Test tools implementation."""
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Type
 from pydantic import BaseModel, Field
 from .base_tool import BaseCustomTool
 
@@ -18,7 +18,7 @@ class TestTool(BaseCustomTool):
     description: str = (
         "A simple test tool that echoes back the input message with additional info."
     )
-    args_schema = TestToolInput
+    args_schema: Optional[Type[BaseModel]] = TestToolInput
 
     def call(self, **kwargs) -> Dict[str, Any]:
         """

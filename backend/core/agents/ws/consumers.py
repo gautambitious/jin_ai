@@ -10,6 +10,7 @@ import struct
 import uuid
 from pathlib import Path
 from channels.generic.websocket import AsyncWebsocketConsumer
+from asgiref.sync import async_to_sync
 
 from agents.ws.audio_generator import generate_tone_sequence, NOTES
 from agents.ws.audio_chunker import chunk_audio
@@ -17,7 +18,9 @@ from agents.ws.audio_streamer import AudioStreamer
 from agents.services.audio_websocket_helper import AudioWebSocketHelper
 from agents.services.tts_service import TTSService
 from agents.services.stt_service import STTService
+from agents.services.websocket_tts_broadcaster import broadcast_tts_message
 from agents.constants import AudioFormat
+from agents.voice_router import VoiceRouter
 from env_vars import DEEPGRAM_TTS_MODEL
 
 logger = logging.getLogger(__name__)
@@ -95,6 +98,12 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         self.is_receiving_audio = False
         self.audio_buffer = []
         self.audio_config = {}
+
+        # Initialize Voice Router for transcript processing
+        self.voice_router = VoiceRouter()
+        logger.info(
+            f"[{self.connection_id}] Voice Router initialized for transcript routing"
+        )
 
         # Add to edge_devices group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
@@ -465,7 +474,51 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                         f"(confidence: {confidence:.2%})"
                     )
 
-                    # TODO: Process transcript (e.g., send to LLM, update conversation state)
+                    # Process transcript through Voice Router
+                    if transcript.strip():
+                        try:
+                            logger.info(
+                                f"[{self.connection_id}] Routing transcript to Voice Router..."
+                            )
+
+                            # Prepare routing metadata
+                            routing_metadata = {
+                                "confidence": confidence,
+                                "connection_id": self.connection_id,
+                                "audio_duration_seconds": duration_seconds,
+                            }
+
+                            # Route transcript through Voice Router
+                            response = await self.voice_router.process_transcript(
+                                transcript=transcript,
+                                session_id=self.connection_id,
+                                metadata=routing_metadata,
+                            )
+
+                            # Extract response text
+                            response_text = response.get("response", "")
+                            routing_decision = response.get("routing_decision", "unknown")
+
+                            logger.info(
+                                f"[{self.connection_id}] Voice Router response "
+                                f"(decision: {routing_decision}): '{response_text[:100]}...'"
+                            )
+
+                            # Broadcast response via TTS to all edge devices
+                            if response_text:
+                                logger.info(
+                                    f"[{self.connection_id}] Broadcasting TTS response..."
+                                )
+                                await broadcast_tts_message(response_text)
+                                logger.info(
+                                    f"[{self.connection_id}] TTS broadcast complete"
+                                )
+
+                        except Exception as e:
+                            logger.error(
+                                f"[{self.connection_id}] Error routing transcript: {e}",
+                                exc_info=True,
+                            )
 
                 except Exception as e:
                     logger.error(

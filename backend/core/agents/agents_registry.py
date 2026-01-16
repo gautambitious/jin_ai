@@ -2,7 +2,8 @@
 
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
-from langchain.agents import AgentExecutor
+# AgentExecutor type - using Any for compatibility with various langchain versions
+from typing import Any as AgentExecutor
 from langchain.tools import BaseTool
 
 
