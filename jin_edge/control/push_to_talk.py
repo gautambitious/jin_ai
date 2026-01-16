@@ -8,9 +8,12 @@ Sends audio chunks and control messages without blocking mic capture.
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from audio.mic_stream import MicStream
 from ws.client import WebSocketClient
+
+if TYPE_CHECKING:
+    from led.controller import LEDController
 
 try:
     import aioconsole
@@ -50,6 +53,7 @@ class PushToTalkController:
         trigger_key: str = "Enter",
         sample_rate: int = 16000,
         channels: int = 1,
+        led_controller: Optional["LEDController"] = None,
     ):
         """
         Initialize push-to-talk controller.
@@ -60,6 +64,7 @@ class PushToTalkController:
             trigger_key: Key description for user instructions (default: "Enter")
             sample_rate: Audio sample rate in Hz (default: 16000)
             channels: Number of audio channels (default: 1 for mono)
+            led_controller: Optional LED controller for visual feedback
         """
         self.ws_client = ws_client
         self.mic_stream = mic_stream or MicStream(
@@ -68,6 +73,7 @@ class PushToTalkController:
         self.trigger_key = trigger_key
         self.sample_rate = sample_rate
         self.channels = channels
+        self.led_controller = led_controller
 
         self._is_streaming = False
         self._is_running = False
@@ -164,6 +170,10 @@ class PushToTalkController:
             # Start streaming task
             self._is_streaming = True
             self._stream_task = asyncio.create_task(self._stream_audio())
+            
+            # Set LED to listening state
+            if self.led_controller:
+                await self.led_controller.set_listening()
 
             print("[Push-to-Talk] 🔴 Recording... Press Enter to stop\n")
 
@@ -190,6 +200,10 @@ class PushToTalkController:
             control_msg = json.dumps({"type": "audio_input_end"})
             await self.ws_client.send_text(control_msg)
             logger.info("Sent audio_input_end message")
+            
+            # Turn off LED
+            if self.led_controller:
+                await self.led_controller.set_off()
 
             print("[Push-to-Talk] ⏹️  Recording stopped. Press Enter to start\n")
 

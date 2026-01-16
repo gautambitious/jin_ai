@@ -8,11 +8,14 @@ Clean state management prevents overlapping sessions.
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from audio.mic_stream import MicStream
 from audio.silence_detector import SilenceDetector, SpeechEvent
 from wakeword.base import WakeWordEvent, WakeWordDetector
 from ws.client import WebSocketClient
+
+if TYPE_CHECKING:
+    from led.controller import LEDController
 
 # Try to import Porcupine, fall back to stub
 try:
@@ -67,6 +70,7 @@ class WakeWordStreamer:
         channels: int = 1,
         silence_threshold: float = 500.0,
         silence_duration_ms: Optional[int] = None,
+        led_controller: Optional["LEDController"] = None,
     ):
         """
         Initialize wake word streamer.
@@ -80,11 +84,13 @@ class WakeWordStreamer:
             channels: Number of audio channels (default: 1 for mono)
             silence_threshold: RMS threshold for silence detection
             silence_duration_ms: Milliseconds of silence before stopping (default: from env_vars.SILENCE_DURATION_MS)
+            led_controller: Optional LED controller for visual feedback
         """
         self.ws_client = ws_client
         self.wake_word = wake_word
         self.sample_rate = sample_rate
         self.channels = channels
+        self.led_controller = led_controller
 
         # Get silence duration from env_vars if not provided
         if silence_duration_ms is None:
@@ -263,6 +269,10 @@ class WakeWordStreamer:
             # Update state
             self._is_streaming = True
             logger.info("🔴 Started buffering audio")
+            
+            # Set LED to listening state
+            if self.led_controller:
+                await self.led_controller.set_listening()
 
         except Exception as e:
             logger.error(f"Failed to start streaming: {e}")
@@ -323,6 +333,10 @@ class WakeWordStreamer:
             # Reset detectors and resume wake word listening
             self.silence_detector.reset()
             self.wake_word_detector.start_listening()
+            
+            # Turn off LED
+            if self.led_controller:
+                await self.led_controller.set_off()
 
             logger.info(f"⏹️  Stopped streaming. Listening for '{self.wake_word}'...")
 

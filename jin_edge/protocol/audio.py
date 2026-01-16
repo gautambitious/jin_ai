@@ -5,6 +5,7 @@ Simple, lightweight handler for audio streaming over WebSocket.
 No business logic, just protocol parsing and forwarding.
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional, TYPE_CHECKING
@@ -12,6 +13,7 @@ from audio.buffer import AudioBuffer
 
 if TYPE_CHECKING:
     from audio.player import AudioPlayer
+    from led.controller import LEDController
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +38,22 @@ class AudioStreamHandler:
             await handler.handle_binary_message(message)
     """
 
-    def __init__(self, audio_buffer: AudioBuffer, audio_player: "AudioPlayer"):
+    def __init__(self, audio_buffer: AudioBuffer, audio_player: "AudioPlayer", led_controller: Optional["LEDController"] = None):
         """
         Initialize audio stream handler.
 
         Args:
             audio_buffer: AudioBuffer instance to receive audio chunks
             audio_player: AudioPlayer instance for playback control
+            led_controller: Optional LED controller for visual feedback
         """
         self.audio_buffer = audio_buffer
         self.audio_player = audio_player
+        self.led_controller = led_controller
         self._active_stream_id: Optional[str] = None
         self._sample_rate: int = 16000  # Default sample rate
         self._playback_started: bool = False
+        self._playback_monitor_task: Optional[asyncio.Task] = None
 
     async def handle_json_message(self, message: str):
         """
@@ -102,6 +107,14 @@ class AudioStreamHandler:
                 logger.info(f"Starting audio playback (first chunk: {len(data)} bytes)")
                 self._playback_started = True
                 self.audio_player._is_playing = True
+                
+                # Set LED to speaking state
+                if self.led_controller:
+                    await self.led_controller.set_speaking()
+                    
+                # Start monitoring task to turn off LED when buffer empties
+                if self._playback_monitor_task is None or self._playback_monitor_task.done():
+                    self._playback_monitor_task = asyncio.create_task(self._monitor_playback())
 
             # Forward chunk to audio buffer
             success = await self.audio_buffer.push(data)
@@ -159,6 +172,9 @@ class AudioStreamHandler:
         logger.info(f"Ended audio stream: {stream_id}")
         self._active_stream_id = None
         self._playback_started = False
+        
+        # Don't turn off LED yet - audio is still playing from buffer
+        # The monitoring task will handle turning off LED when buffer empties
 
     async def _handle_stop_playback(self):
         """Handle stop_playback message."""
@@ -167,6 +183,46 @@ class AudioStreamHandler:
         await self.audio_buffer.clear()
         self._playback_started = False
         self._active_stream_id = None
+        
+        # Cancel monitoring task
+        if self._playback_monitor_task and not self._playback_monitor_task.done():
+            self._playback_monitor_task.cancel()
+            try:
+                await self._playback_monitor_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Turn off LED
+        if self.led_controller:
+            await self.led_controller.set_off()
+    
+    async def _monitor_playback(self):
+        """Monitor audio buffer and turn off LED when playback finishes."""
+        try:
+            # Wait for stream to end
+            while self._active_stream_id is not None:
+                await asyncio.sleep(0.1)
+            
+            # Stream ended, wait for buffer to empty and stay empty
+            logger.debug("Audio stream ended, monitoring buffer...")
+            empty_count = 0
+            while empty_count < 3:  # Buffer must be empty for 3 consecutive checks (300ms)
+                buffer_size = await self.audio_buffer.size()
+                if buffer_size == 0:
+                    empty_count += 1
+                else:
+                    empty_count = 0  # Reset if buffer has data
+                await asyncio.sleep(0.1)
+            
+            # Buffer has been empty for a while, turn off LED
+            logger.debug("Audio buffer empty, turning off LED")
+            if self.led_controller:
+                await self.led_controller.set_off()
+                
+        except asyncio.CancelledError:
+            logger.debug("Playback monitoring cancelled")
+        except Exception as e:
+            logger.error(f"Error monitoring playback: {e}")
 
     @property
     def active_stream_id(self) -> Optional[str]:

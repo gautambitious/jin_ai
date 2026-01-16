@@ -46,6 +46,12 @@ AUDIO_CHANNELS = _audio_config.get("channels", 1)
 AUDIO_BUFFER_SIZE = _audio_config.get("buffer_size", 1048576)
 AUDIO_CHUNK_SIZE = _audio_config.get("chunk_size", 2048)
 
+# Audio Device (to avoid PWM conflicts with LEDs on GPIO 18)
+# None = default, or specify device index (e.g., 4 for dmix)
+AUDIO_DEVICE = os.getenv("AUDIO_DEVICE")
+if AUDIO_DEVICE is not None:
+    AUDIO_DEVICE = int(AUDIO_DEVICE) if AUDIO_DEVICE.isdigit() else AUDIO_DEVICE
+
 # Connection Settings (from JSON)
 _WS_DEFAULTS = {
     "max_retries": 10,
@@ -57,12 +63,27 @@ WS_MAX_RETRIES = _ws_config.get("max_retries", 10)
 WS_INITIAL_RETRY_DELAY = _ws_config.get("initial_retry_delay", 1.0)
 WS_MAX_RETRY_DELAY = _ws_config.get("max_retry_delay", 60.0)
 
+# LED Settings (from JSON)
+_LED_DEFAULTS = {
+    "enabled": True,
+    "gpio_pin": 18,
+    "num_pixels": 10,
+    "brightness": 0.3,
+    "pulse_speed": 0.05,
+    "spin_speed": 0.1,
+}
+LED_CONFIG = json.loads(os.getenv("LED_CONFIG", json.dumps(_LED_DEFAULTS)))
+
+# LED Auto-off timeout in seconds (default: 30 seconds)
+LED_AUTO_OFF_TIMEOUT = int(os.getenv("LED_AUTO_OFF_TIMEOUT", "30"))
+
 __all__ = [
     "WEBSOCKET_URL",
     "AUDIO_SAMPLE_RATE",
     "AUDIO_CHANNELS",
     "AUDIO_BUFFER_SIZE",
     "AUDIO_CHUNK_SIZE",
+    "AUDIO_DEVICE",
     "LOG_LEVEL",
     "WS_MAX_RETRIES",
     "WS_INITIAL_RETRY_DELAY",
@@ -71,4 +92,6 @@ __all__ = [
     "PORCUPINE_ACCESS_KEY",
     "PORCUPINE_MODEL_PATH",
     "SILENCE_DURATION_MS",
+    "LED_CONFIG",
+    "LED_AUTO_OFF_TIMEOUT",
 ]

@@ -18,6 +18,7 @@ from protocol.audio import AudioStreamHandler
 from ws.client import WebSocketClient
 from control.push_to_talk import PushToTalkController
 from control.wakeword_streamer import WakeWordStreamer
+from led.controller import LEDController
 import env_vars
 
 
@@ -40,15 +41,19 @@ class JinEdgeClient:
     def __init__(
         self, enable_push_to_talk: bool = False, enable_wakeword: bool = False
     ):
+        # LED Controller
+        self.led_controller = LEDController()
+        
         self.audio_player = AudioPlayer(
             sample_rate=env_vars.AUDIO_SAMPLE_RATE,
             channels=env_vars.AUDIO_CHANNELS,
             buffer_size=env_vars.AUDIO_BUFFER_SIZE,
             chunk_size=env_vars.AUDIO_CHUNK_SIZE,
+            device=env_vars.AUDIO_DEVICE,
         )
         # Use the player's internal buffer directly
         self.protocol_handler = AudioStreamHandler(
-            self.audio_player._buffer, self.audio_player
+            self.audio_player._buffer, self.audio_player, self.led_controller
         )
         self.ws_client: WebSocketClient | None = None
         self.push_to_talk: PushToTalkController | None = None
@@ -99,6 +104,7 @@ class JinEdgeClient:
                 ws_client=self.ws_client,
                 sample_rate=env_vars.AUDIO_SAMPLE_RATE,
                 channels=env_vars.AUDIO_CHANNELS,
+                led_controller=self.led_controller,
             )
             await self.push_to_talk.start()
         elif self.enable_wakeword:
@@ -109,6 +115,7 @@ class JinEdgeClient:
                 sample_rate=env_vars.AUDIO_SAMPLE_RATE,
                 channels=env_vars.AUDIO_CHANNELS,
                 silence_threshold=500,
+                led_controller=self.led_controller,
                 # silence_duration_ms uses env_vars.SILENCE_DURATION_MS (default 3000ms)
             )
             await self.wakeword_streamer.start()
@@ -145,6 +152,9 @@ class JinEdgeClient:
 
         # Stop audio player
         await self.audio_player.stop()
+        
+        # Turn off LEDs
+        await self.led_controller.off()
 
         logger.info("✅ Stopped")
 
