@@ -12,6 +12,24 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 # WebSocket Configuration
 WEBSOCKET_URL = os.getenv("WEBSOCKET_URL", "ws://localhost:8000/ws/audio")
 
+# Optimized Streaming Configuration
+USE_STREAMING_ENDPOINT = os.getenv("USE_STREAMING_ENDPOINT", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+DEVICE_ID = os.getenv("DEVICE_ID", "edge_device_001")  # Unique device identifier
+
+
+# Get the appropriate WebSocket URL based on mode
+def get_websocket_url():
+    if USE_STREAMING_ENDPOINT:
+        # Extract base URL and port from WEBSOCKET_URL
+        base_url = WEBSOCKET_URL.rsplit("/", 2)[0]  # Remove /ws/audio
+        return f"{base_url}/ws/stream/{DEVICE_ID}"
+    return WEBSOCKET_URL
+
+
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

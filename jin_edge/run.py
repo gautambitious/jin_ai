@@ -43,7 +43,7 @@ class JinEdgeClient:
     ):
         # LED Controller
         self.led_controller = LEDController()
-        
+
         self.audio_player = AudioPlayer(
             sample_rate=env_vars.AUDIO_SAMPLE_RATE,
             channels=env_vars.AUDIO_CHANNELS,
@@ -83,8 +83,10 @@ class JinEdgeClient:
         await self.audio_player.start()
 
         # Create WebSocket client with protocol handler
+        # Use streaming endpoint if enabled
+        ws_url = env_vars.get_websocket_url()
         self.ws_client = WebSocketClient(
-            url=env_vars.WEBSOCKET_URL,
+            url=ws_url,
             protocol_handler=self.protocol_handler,
             on_connect=self.on_connect,
             on_disconnect=self.on_disconnect,
@@ -94,7 +96,8 @@ class JinEdgeClient:
         )
 
         # Connect to WebSocket server
-        logger.info(f"🔌 Connecting to {env_vars.WEBSOCKET_URL}...")
+        mode_label = "streaming" if env_vars.USE_STREAMING_ENDPOINT else "legacy"
+        logger.info(f"🔌 Connecting to {ws_url} ({mode_label} mode)...")
         await self.ws_client.connect()
 
         # Start input mode if enabled
@@ -108,17 +111,31 @@ class JinEdgeClient:
             )
             await self.push_to_talk.start()
         elif self.enable_wakeword:
-            logger.info("🎤 Enabling wake word mode (Say 'hey jin')...")
-            self.wakeword_streamer = WakeWordStreamer(
-                ws_client=self.ws_client,
-                wake_word="hey jin",
-                sample_rate=env_vars.AUDIO_SAMPLE_RATE,
-                channels=env_vars.AUDIO_CHANNELS,
-                silence_threshold=500,
-                led_controller=self.led_controller,
-                # silence_duration_ms, listening_timeout_seconds, use_relative_silence,
-                # and relative_silence_threshold will use env_vars defaults
-            )
+            # Use optimized streaming controller if enabled
+            if env_vars.USE_STREAMING_ENDPOINT:
+                logger.info(
+                    "🎤 Enabling OPTIMIZED streaming wake word mode (Say 'hey jin')..."
+                )
+                from control.streaming_wakeword import StreamingWakeWordController
+
+                self.wakeword_streamer = StreamingWakeWordController(
+                    ws_client=self.ws_client,
+                    wake_word="hey jin",
+                    sample_rate=env_vars.AUDIO_SAMPLE_RATE,
+                    channels=env_vars.AUDIO_CHANNELS,
+                    silence_threshold=500,
+                    led_controller=self.led_controller,
+                )
+            else:
+                logger.info("🎤 Enabling wake word mode (Say 'hey jin')...")
+                self.wakeword_streamer = WakeWordStreamer(
+                    ws_client=self.ws_client,
+                    wake_word="hey jin",
+                    sample_rate=env_vars.AUDIO_SAMPLE_RATE,
+                    channels=env_vars.AUDIO_CHANNELS,
+                    silence_threshold=500,
+                    led_controller=self.led_controller,
+                )
             await self.wakeword_streamer.start()
 
         # Keep running until stopped
@@ -153,7 +170,7 @@ class JinEdgeClient:
 
         # Stop audio player
         await self.audio_player.stop()
-        
+
         # Turn off LEDs
         await self.led_controller.off()
 
