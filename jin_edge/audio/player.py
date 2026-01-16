@@ -56,14 +56,14 @@ class AudioPlayer:
     async def start(self):
         """Initialize the audio output stream and playback loop."""
         if self._stream is None:
-            # Low latency settings for immediate playback
+            # Balanced settings for smooth playback with acceptable latency
             self._stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype=self.dtype,
                 device=self.device,
-                blocksize=1024,  # Small buffer for low latency
-                latency="low",
+                blocksize=2048,  # Larger buffer for smoother playback
+                latency="high",  # Prevents clicks and pops on device initialization
             )
             self._stream.start()
 
@@ -104,16 +104,21 @@ class AudioPlayer:
     async def _playback_loop(self):
         """
         Internal playback loop that pulls from buffer.
-        Avoids busy waiting by sleeping when buffer is empty.
+        Keeps stream active with silence to prevent clicks.
         """
         import logging
 
         logger = logging.getLogger(__name__)
+        # Pre-generate silence buffer for when no audio is playing
+        silence_chunk = np.zeros(self.chunk_size // 2, dtype=np.int16)  # chunk_size/2 samples
 
         while not self._stop_event.is_set():
             if not self._is_playing:
-                # No active playback, sleep to avoid busy waiting
-                await asyncio.sleep(0.01)
+                # Stream silence to keep audio device active and prevent clicks
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._stream.write, silence_chunk
+                )
+                await asyncio.sleep(0.05)  # 50ms silence chunks
                 continue
 
             # Pull chunk from buffer
@@ -127,10 +132,12 @@ class AudioPlayer:
                     None, self._stream.write, audio_data
                 )
             else:
-                # Buffer empty, but keep playing flag set to continue when more data arrives
-                logger.debug("Player buffer empty, waiting for more data...")
-                # Small sleep to avoid busy waiting
-                await asyncio.sleep(0.01)
+                # Buffer empty during playback - stream silence to prevent underrun clicks
+                logger.debug("Player buffer empty, streaming silence...")
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._stream.write, silence_chunk
+                )
+                await asyncio.sleep(0.005)
 
     async def stop(self):
         """Stop playback immediately and close the audio stream."""

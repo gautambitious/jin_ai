@@ -126,6 +126,8 @@ class JinEdgeClient:
                     silence_threshold=500,
                     led_controller=self.led_controller,
                 )
+                # Register message callback with protocol handler
+                self.protocol_handler.on_message = self.wakeword_streamer._on_server_message
             else:
                 logger.info("🎤 Enabling wake word mode (Say 'hey jin')...")
                 self.wakeword_streamer = WakeWordStreamer(

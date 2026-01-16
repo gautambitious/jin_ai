@@ -22,9 +22,14 @@ class LEDClient:
     def __init__(self):
         """Initialize client."""
         self._last_state = None
+        self._available = None  # None = not checked, True/False = availability status
 
     def _send_command(self, command: str) -> bool:
         """Send command to daemon."""
+        # Check availability on first call
+        if self._available is False:
+            return False
+            
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(self.TIMEOUT)
@@ -33,6 +38,10 @@ class LEDClient:
             response = sock.recv(1024).decode().strip()
             sock.close()
             
+            if self._available is None:
+                logger.info("LED daemon connected and available")
+            self._available = True
+            
             if response == "OK":
                 return True
             else:
@@ -40,16 +49,24 @@ class LEDClient:
                 return False
                 
         except FileNotFoundError:
-            logger.error(f"LED daemon socket not found at {self.SOCKET_PATH}. Is the daemon running?")
+            if self._available is None:
+                logger.info(f"LED daemon not available (socket not found at {self.SOCKET_PATH})")
+            self._available = False
             return False
         except ConnectionRefusedError:
-            logger.error("LED daemon refused connection. Is it running?")
+            if self._available is None:
+                logger.info("LED daemon not available (connection refused)")
+            self._available = False
             return False
         except socket.timeout:
-            logger.error("LED daemon timeout")
+            logger.warning("LED daemon timeout")
             return False
         except Exception as e:
-            logger.error(f"Error communicating with LED daemon: {e}")
+            if self._available is None:
+                logger.info(f"LED daemon not available: {e}")
+            else:
+                logger.warning(f"Error communicating with LED daemon: {e}")
+            self._available = False
             return False
 
     def set_state(self, state: str) -> bool:

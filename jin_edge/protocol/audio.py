@@ -38,7 +38,7 @@ class AudioStreamHandler:
             await handler.handle_binary_message(message)
     """
 
-    def __init__(self, audio_buffer: AudioBuffer, audio_player: "AudioPlayer", led_controller: Optional["LEDController"] = None):
+    def __init__(self, audio_buffer: AudioBuffer, audio_player: "AudioPlayer", led_controller: Optional["LEDController"] = None, on_message: Optional[callable] = None):
         """
         Initialize audio stream handler.
 
@@ -46,14 +46,18 @@ class AudioStreamHandler:
             audio_buffer: AudioBuffer instance to receive audio chunks
             audio_player: AudioPlayer instance for playback control
             led_controller: Optional LED controller for visual feedback
+            on_message: Optional callback for non-audio messages (transcript, etc.)
         """
         self.audio_buffer = audio_buffer
         self.audio_player = audio_player
         self.led_controller = led_controller
+        self.on_message = on_message
         self._active_stream_id: Optional[str] = None
         self._sample_rate: int = 16000  # Default sample rate
         self._playback_started: bool = False
         self._playback_monitor_task: Optional[asyncio.Task] = None
+        self._silence_filler_task: Optional[asyncio.Task] = None
+        self._stop_silence_filler = asyncio.Event()
 
     async def handle_json_message(self, message: str):
         """
@@ -78,7 +82,14 @@ class AudioStreamHandler:
             elif msg_type == "stop_playback":
                 await self._handle_stop_playback()
             else:
-                logger.debug(f"Unknown message type: {msg_type}, ignoring")
+                # Forward non-audio messages to callback if registered
+                if self.on_message:
+                    try:
+                        await self.on_message(data)
+                    except Exception as e:
+                        logger.error(f"Error in message callback: {e}")
+                else:
+                    logger.debug(f"Unknown message type: {msg_type}, ignoring")
 
         except json.JSONDecodeError:
             logger.warning("Failed to parse JSON message, ignoring")
@@ -102,19 +113,30 @@ class AudioStreamHandler:
                 logger.debug("Received empty audio chunk, ignoring")
                 return
 
-            # Start playback on first chunk
+            # Pre-buffer audio before starting playback to prevent clicks
             if not self._playback_started:
-                logger.info(f"Starting audio playback (first chunk: {len(data)} bytes)")
-                self._playback_started = True
-                self.audio_player._is_playing = True
-                
-                # Set LED to speaking state
-                if self.led_controller:
-                    await self.led_controller.set_speaking()
+                # Get current buffer size
+                buffer_size = await self.audio_buffer.size()
+                # Start playback once we have at least 8KB buffered (0.25s at 16kHz 16-bit mono)
+                if buffer_size >= 8192:
+                    logger.info(f"Starting audio playback (buffer: {buffer_size} bytes)")
+                    self._playback_started = True
+                    self.audio_player._is_playing = True
                     
-                # Start monitoring task to turn off LED when buffer empties
-                if self._playback_monitor_task is None or self._playback_monitor_task.done():
-                    self._playback_monitor_task = asyncio.create_task(self._monitor_playback())
+                    # Set LED to speaking state
+                    if self.led_controller:
+                        await self.led_controller.set_speaking()
+                        
+                    # Start monitoring task to turn off LED when buffer empties
+                    if self._playback_monitor_task is None or self._playback_monitor_task.done():
+                        self._playback_monitor_task = asyncio.create_task(self._monitor_playback())
+                    
+                    # Start silence filler task to keep buffer from emptying
+                    if self._silence_filler_task is None or self._silence_filler_task.done():
+                        self._stop_silence_filler.clear()
+                        self._silence_filler_task = asyncio.create_task(self._fill_silence())
+                else:
+                    logger.debug(f"Pre-buffering audio: {buffer_size}/8192 bytes")
 
             # Forward chunk to audio buffer
             success = await self.audio_buffer.push(data)
@@ -184,6 +206,15 @@ class AudioStreamHandler:
         self._playback_started = False
         self._active_stream_id = None
         
+        # Stop silence filler
+        self._stop_silence_filler.set()
+        if self._silence_filler_task and not self._silence_filler_task.done():
+            self._silence_filler_task.cancel()
+            try:
+                await self._silence_filler_task
+            except asyncio.CancelledError:
+                pass
+        
         # Cancel monitoring task
         if self._playback_monitor_task and not self._playback_monitor_task.done():
             self._playback_monitor_task.cancel()
@@ -195,6 +226,30 @@ class AudioStreamHandler:
         # Turn off LED
         if self.led_controller:
             await self.led_controller.set_off()
+    
+    async def _fill_silence(self):
+        """Continuously fill buffer with silence to prevent it from emptying completely."""
+        try:
+            # 100ms of silence = 3200 bytes at 16kHz, 16-bit mono
+            silence_chunk = b'\x00' * 3200
+            
+            while not self._stop_silence_filler.is_set():
+                # Only add silence if buffer is getting low and stream is active
+                buffer_size = await self.audio_buffer.size()
+                
+                # If buffer drops below 8KB, add silence aggressively
+                if buffer_size < 8192 and self._active_stream_id:
+                    success = await self.audio_buffer.push(silence_chunk)
+                    if success:
+                        logger.debug(f"Added silence padding, buffer now: {buffer_size + 3200} bytes")
+                
+                # Check every 50ms for more responsive filling
+                await asyncio.sleep(0.05)
+                
+        except asyncio.CancelledError:
+            logger.debug("Silence filler cancelled")
+        except Exception as e:
+            logger.error(f"Error in silence filler: {e}")
     
     async def _monitor_playback(self):
         """Monitor audio buffer and turn off LED when playback finishes."""

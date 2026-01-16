@@ -124,11 +124,11 @@ class StreamingWakeWordController:
         self.silence_detector = SilenceDetector(
             sample_rate=sample_rate,
             silence_threshold=silence_threshold,
-            silence_duration_ms=silence_duration_ms,
+            silence_duration_ms=self.silence_duration_ms,
             on_speech_start=None,
             on_speech_end=None,
-            use_relative_threshold=use_relative_silence,
-            relative_threshold_ratio=relative_silence_threshold,
+            use_relative_threshold=self.use_relative_silence,
+            relative_threshold_ratio=self.relative_silence_threshold,
         )
 
         # State management
@@ -136,7 +136,6 @@ class StreamingWakeWordController:
         self._is_streaming = False
         self._is_playing_response = False
         self._stream_task: Optional[asyncio.Task] = None
-        self._receive_task: Optional[asyncio.Task] = None
         self._chunk_duration_ms = 30
         self._streaming_start_time: Optional[float] = None
         self._wake_word_energy_samples = []
@@ -159,9 +158,6 @@ class StreamingWakeWordController:
         # Start processing loop
         self._stream_task = asyncio.create_task(self._processing_loop())
 
-        # Start message receiver
-        self._receive_task = asyncio.create_task(self._receive_loop())
-
     async def stop(self):
         """Stop the controller and cleanup."""
         self._is_running = False
@@ -175,13 +171,6 @@ class StreamingWakeWordController:
             self._stream_task.cancel()
             try:
                 await self._stream_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._receive_task:
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
             except asyncio.CancelledError:
                 pass
 
@@ -206,36 +195,12 @@ class StreamingWakeWordController:
             logger.error(f"Processing loop error: {e}")
             self._is_running = False
 
-    async def _receive_loop(self):
-        """Receive and handle messages from server."""
+    async def _on_server_message(self, data: dict):
+        """Callback for non-audio messages from server (called by protocol handler)."""
         try:
-            while self._is_running:
-                # Get message from WebSocket
-                message = await self.ws_client.receive()
-
-                if message is None:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                # Handle message
-                if isinstance(message, bytes):
-                    # Audio response - mark as playing
-                    self._is_playing_response = True
-                    # Audio gets played automatically by protocol handler
-
-                elif isinstance(message, str):
-                    try:
-                        data = json.loads(message)
-                        await self._handle_server_message(data)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON: {message}")
-
-                await asyncio.sleep(0)
-
-        except asyncio.CancelledError:
-            pass
+            await self._handle_server_message(data)
         except Exception as e:
-            logger.error(f"Receive loop error: {e}")
+            logger.error(f"Error handling server message: {e}")
 
     async def _handle_server_message(self, data: dict):
         """Handle JSON message from server."""
@@ -301,7 +266,7 @@ class StreamingWakeWordController:
     async def _handle_streaming_chunk(self, chunk: bytes):
         """
         Process audio while streaming.
-        KEY OPTIMIZATION: Send chunk IMMEDIATELY (no buffering!)
+        Send chunks immediately to backend for processing.
         """
         try:
             # Check timeout
@@ -312,10 +277,10 @@ class StreamingWakeWordController:
                     await self._stop_streaming()
                     return
 
-            # Send chunk IMMEDIATELY - no buffering!
+            # Send chunk immediately to backend
             await self.ws_client.send_binary(chunk)
 
-            # Check for silence
+            # Check for silence to stop streaming
             event = self.silence_detector.process(chunk)
             if event == SpeechEvent.SPEECH_ENDED:
                 logger.info("🤐 Silence detected")
