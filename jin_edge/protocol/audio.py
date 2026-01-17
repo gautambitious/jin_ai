@@ -27,6 +27,11 @@ class AudioStreamHandler:
         - Binary: raw PCM audio chunks
         - JSON: {"type": "audio_end", "stream_id": "..."}
         - JSON: {"type": "stop_playback"}
+        
+    Features:
+        - Single playback session per response
+        - No buffering delays (player handles initial buffering)
+        - Continuous playback across sentence boundaries
 
     Usage:
         handler = AudioStreamHandler(audio_buffer, audio_player)
@@ -43,7 +48,7 @@ class AudioStreamHandler:
         Initialize audio stream handler.
 
         Args:
-            audio_buffer: AudioBuffer instance to receive audio chunks
+            audio_buffer: AudioBuffer instance (legacy, may not be used)
             audio_player: AudioPlayer instance for playback control
             led_controller: Optional LED controller for visual feedback
             on_message: Optional callback for non-audio messages (transcript, etc.)
@@ -54,10 +59,8 @@ class AudioStreamHandler:
         self.on_message = on_message
         self._active_stream_id: Optional[str] = None
         self._sample_rate: int = 16000  # Default sample rate
-        self._playback_started: bool = False
+        self._led_control_enabled: bool = True  # Can be disabled during streaming input
         self._playback_monitor_task: Optional[asyncio.Task] = None
-        self._silence_filler_task: Optional[asyncio.Task] = None
-        self._stop_silence_filler = asyncio.Event()
 
     async def handle_json_message(self, message: str):
         """
@@ -113,37 +116,12 @@ class AudioStreamHandler:
                 logger.debug("Received empty audio chunk, ignoring")
                 return
 
-            # Pre-buffer audio before starting playback to prevent clicks
-            if not self._playback_started:
-                # Get current buffer size
-                buffer_size = await self.audio_buffer.size()
-                # Start playback once we have at least 8KB buffered (0.25s at 16kHz 16-bit mono)
-                if buffer_size >= 8192:
-                    logger.info(f"Starting audio playback (buffer: {buffer_size} bytes)")
-                    self._playback_started = True
-                    self.audio_player._is_playing = True
-                    
-                    # Set LED to speaking state
-                    if self.led_controller:
-                        await self.led_controller.set_speaking()
-                        
-                    # Start monitoring task to turn off LED when buffer empties
-                    if self._playback_monitor_task is None or self._playback_monitor_task.done():
-                        self._playback_monitor_task = asyncio.create_task(self._monitor_playback())
-                    
-                    # Start silence filler task to keep buffer from emptying
-                    if self._silence_filler_task is None or self._silence_filler_task.done():
-                        self._stop_silence_filler.clear()
-                        self._silence_filler_task = asyncio.create_task(self._fill_silence())
-                else:
-                    logger.debug(f"Pre-buffering audio: {buffer_size}/8192 bytes")
-
-            # Forward chunk to audio buffer
-            success = await self.audio_buffer.push(data)
+            # Feed chunk directly to audio player
+            success = await self.audio_player.feed(data)
             if success:
-                logger.debug(f"Forwarded {len(data)} bytes to audio buffer")
+                logger.debug(f"Fed {len(data)} bytes to audio player")
             else:
-                logger.warning(f"Audio buffer full, dropped {len(data)} bytes")
+                logger.warning(f"Audio player buffer full, dropped {len(data)} bytes")
 
         except Exception as e:
             logger.error(f"Error handling binary message: {e}")
@@ -151,6 +129,7 @@ class AudioStreamHandler:
     async def _handle_audio_start(self, data: dict):
         """
         Handle audio_start message.
+        Begins a new playback session.
 
         Args:
             data: Parsed JSON message
@@ -162,20 +141,32 @@ class AudioStreamHandler:
             logger.warning("audio_start missing stream_id, ignoring")
             return
 
-        # If there's already an active stream, stop it first
+        # If there's already an active stream, end it first
         if self._active_stream_id and self._active_stream_id != stream_id:
             logger.info(f"Stopping existing stream {self._active_stream_id}")
-            await self.audio_buffer.clear()
-            self._playback_started = False
+            await self.audio_player.end_session()
 
         self._active_stream_id = stream_id
         self._sample_rate = sample_rate
 
-        logger.info(f"Started audio stream: {stream_id}, rate: {sample_rate}Hz")
+        # Begin new playback session
+        await self.audio_player.begin_session()
+        
+        # Set LED to speaking state only if LED control is enabled
+        if self.led_controller and self._led_control_enabled:
+            await self.led_controller.set_speaking()
+            logger.info("💡 LED: Speaking (bright blue)")
+        
+        # Start monitoring task to turn off LED when playback finishes
+        if self._playback_monitor_task is None or self._playback_monitor_task.done():
+            self._playback_monitor_task = asyncio.create_task(self._monitor_playback())
+
+        logger.info(f"🎵 Started audio stream: {stream_id}, rate: {sample_rate}Hz")
 
     async def _handle_audio_end(self, data: dict):
         """
         Handle audio_end message.
+        Ends the playback session (fade-out and stream close).
 
         Args:
             data: Parsed JSON message
@@ -191,29 +182,21 @@ class AudioStreamHandler:
             logger.debug(f"audio_end for non-active stream {stream_id}, ignoring")
             return
 
-        logger.info(f"Ended audio stream: {stream_id}")
-        self._active_stream_id = None
-        self._playback_started = False
+        logger.info(f"🎵 Ending audio stream: {stream_id}")
         
-        # Don't turn off LED yet - audio is still playing from buffer
-        # The monitoring task will handle turning off LED when buffer empties
+        # End playback session (will drain buffer with fade-out)
+        await self.audio_player.end_session()
+        
+        self._active_stream_id = None
 
     async def _handle_stop_playback(self):
-        """Handle stop_playback message."""
-        logger.info("Stopping playback")
-        self.audio_player._is_playing = False
-        await self.audio_buffer.clear()
-        self._playback_started = False
-        self._active_stream_id = None
+        """Handle stop_playback message (interrupt)."""
+        logger.info("⚡ Stopping playback (interrupt)")
         
-        # Stop silence filler
-        self._stop_silence_filler.set()
-        if self._silence_filler_task and not self._silence_filler_task.done():
-            self._silence_filler_task.cancel()
-            try:
-                await self._silence_filler_task
-            except asyncio.CancelledError:
-                pass
+        # Interrupt playback immediately
+        await self.audio_player.interrupt()
+        
+        self._active_stream_id = None
         
         # Cancel monitoring task
         if self._playback_monitor_task and not self._playback_monitor_task.done():
@@ -226,53 +209,23 @@ class AudioStreamHandler:
         # Turn off LED
         if self.led_controller:
             await self.led_controller.set_off()
-    
-    async def _fill_silence(self):
-        """Continuously fill buffer with silence to prevent it from emptying completely."""
-        try:
-            # 100ms of silence = 3200 bytes at 16kHz, 16-bit mono
-            silence_chunk = b'\x00' * 3200
-            
-            while not self._stop_silence_filler.is_set():
-                # Only add silence if buffer is getting low and stream is active
-                buffer_size = await self.audio_buffer.size()
-                
-                # If buffer drops below 8KB, add silence aggressively
-                if buffer_size < 8192 and self._active_stream_id:
-                    success = await self.audio_buffer.push(silence_chunk)
-                    if success:
-                        logger.debug(f"Added silence padding, buffer now: {buffer_size + 3200} bytes")
-                
-                # Check every 50ms for more responsive filling
-                await asyncio.sleep(0.05)
-                
-        except asyncio.CancelledError:
-            logger.debug("Silence filler cancelled")
-        except Exception as e:
-            logger.error(f"Error in silence filler: {e}")
+            logger.info("💡 LED: Off (playback stopped)")
     
     async def _monitor_playback(self):
-        """Monitor audio buffer and turn off LED when playback finishes."""
+        """Monitor playback and turn off LED when session finishes."""
         try:
-            # Wait for stream to end
-            while self._active_stream_id is not None:
+            # Wait for playback session to finish
+            while self.audio_player.is_session_active:
                 await asyncio.sleep(0.1)
             
-            # Stream ended, wait for buffer to empty and stay empty
-            logger.debug("Audio stream ended, monitoring buffer...")
-            empty_count = 0
-            while empty_count < 3:  # Buffer must be empty for 3 consecutive checks (300ms)
-                buffer_size = await self.audio_buffer.size()
-                if buffer_size == 0:
-                    empty_count += 1
-                else:
-                    empty_count = 0  # Reset if buffer has data
-                await asyncio.sleep(0.1)
+            # Wait a bit more to ensure audio has finished playing
+            await asyncio.sleep(0.3)
             
-            # Buffer has been empty for a while, turn off LED
-            logger.debug("Audio buffer empty, turning off LED")
-            if self.led_controller:
-                await self.led_controller.set_off()
+            # Turn off LED only if LED control is enabled
+            if self._led_control_enabled:
+                logger.info("💡 LED: Off (playback complete)")
+                if self.led_controller:
+                    await self.led_controller.set_off()
                 
         except asyncio.CancelledError:
             logger.debug("Playback monitoring cancelled")
@@ -293,3 +246,12 @@ class AudioStreamHandler:
     def is_streaming(self) -> bool:
         """Check if actively streaming."""
         return self._active_stream_id is not None
+    
+    def set_led_control(self, enabled: bool):
+        """Enable or disable LED control from this handler.
+        
+        Useful when another component (like StreamingWakeWordController)
+        needs to take over LED control temporarily.
+        """
+        self._led_control_enabled = enabled
+        logger.debug(f"LED control {'enabled' if enabled else 'disabled'} in AudioStreamHandler")

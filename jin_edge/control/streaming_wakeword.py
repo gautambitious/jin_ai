@@ -69,6 +69,7 @@ class StreamingWakeWordController:
         use_relative_silence: Optional[bool] = None,
         relative_silence_threshold: Optional[float] = None,
         led_controller: Optional["LEDController"] = None,
+        protocol_handler: Optional[object] = None,
     ):
         """Initialize optimized streaming wake word controller."""
         self.ws_client = ws_client
@@ -76,6 +77,7 @@ class StreamingWakeWordController:
         self.sample_rate = sample_rate
         self.channels = channels
         self.led_controller = led_controller
+        self.protocol_handler = protocol_handler
 
         # Get settings from env_vars if not provided
         self.silence_duration_ms = silence_duration_ms or env_vars.SILENCE_DURATION_MS
@@ -151,6 +153,7 @@ class StreamingWakeWordController:
             return
 
         self._is_running = True
+        
         logger.info(
             f"🎤 Streaming controller started. Listening for '{self.wake_word}'..."
         )
@@ -259,6 +262,11 @@ class StreamingWakeWordController:
             if self._is_playing_response:
                 logger.info("⚠️ Interrupting current response")
                 await self._send_interrupt()
+                
+                # Interrupt audio player directly
+                if hasattr(self.protocol_handler, 'audio_player'):
+                    await self.protocol_handler.audio_player.interrupt()
+                
                 self._is_playing_response = False
 
             await self._start_streaming()
@@ -297,6 +305,11 @@ class StreamingWakeWordController:
             return
 
         try:
+            # Disable LED control in protocol handler - we're taking over during input
+            if self.protocol_handler and hasattr(self.protocol_handler, 'set_led_control'):
+                self.protocol_handler.set_led_control(False)
+                logger.debug("LED control disabled in AudioStreamHandler during streaming")
+            
             # Set baseline energy
             if self._wake_word_energy_samples and self.use_relative_silence:
                 baseline = sum(self._wake_word_energy_samples) / len(
@@ -332,9 +345,10 @@ class StreamingWakeWordController:
                 f"🔴 Streaming started (timeout: {self.listening_timeout_seconds}s)"
             )
 
-            # Set LED
+            # Set LED to listening (blue spinning)
             if self.led_controller:
                 await self.led_controller.set_listening()
+                logger.info("💡 LED: Listening (blue spinning)")
 
         except Exception as e:
             logger.error(f"Failed to start streaming: {e}")
@@ -362,9 +376,15 @@ class StreamingWakeWordController:
             self._wake_word_energy_samples = []
             self.wake_word_detector.start_listening()
 
-            # Turn off LED
+            # Turn off LED immediately - waiting for response
             if self.led_controller:
                 await self.led_controller.set_off()
+                logger.info("💡 LED: Off (waiting for response)")
+            
+            # Re-enable LED control in protocol handler for response playback
+            if self.protocol_handler and hasattr(self.protocol_handler, 'set_led_control'):
+                self.protocol_handler.set_led_control(True)
+                logger.debug("LED control re-enabled in AudioStreamHandler for response playback")
 
             logger.info(f"👂 Listening for '{self.wake_word}'...")
 
