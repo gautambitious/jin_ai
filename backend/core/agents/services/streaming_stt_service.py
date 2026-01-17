@@ -9,7 +9,7 @@ import logging
 from typing import Optional, Dict, Any, Callable
 import asyncio
 
-from deepgram import DeepgramClient
+from deepgram import AsyncDeepgramClient
 
 from env_vars import DEEPGRAM_API_KEY, DEEPGRAM_STT_MODEL
 from agents.constants import STTDefaults, ErrorMessages
@@ -64,8 +64,8 @@ class StreamingSTTService:
 
         self.model = model or DEEPGRAM_STT_MODEL
 
-        # Configure Deepgram client (v5.3.1 uses default config)
-        self.client = DeepgramClient(api_key=self.api_key)
+        # Configure Deepgram async client (v5.3.1)
+        self.client = AsyncDeepgramClient(api_key=self.api_key)
 
         # Connection state
         self.connection = None
@@ -120,14 +120,29 @@ class StreamingSTTService:
             if self.is_connected:
                 raise StreamingSTTServiceError("Stream already active")
 
+            # Validate API key format
+            if not self.api_key or len(self.api_key) < 10:
+                raise StreamingSTTServiceError(
+                    "Invalid or missing DEEPGRAM_API_KEY. Check your .env file."
+                )
+
+            logger.info(
+                f"Starting Deepgram connection: model={self.model}, "
+                f"language={language}, sample_rate={sample_rate}Hz, "
+                f"encoding={encoding}, API key={'*' * 8}{self.api_key[-4:]}"
+            )
+
             # Store callbacks
             self.on_transcript_callback = on_transcript
             self.on_error_callback = on_error
             self.on_metadata_callback = on_metadata
 
-            # Create live transcription connection using context manager
-            # SDK v5.3.1 uses deepgram.listen.v1.connect() as context manager
-            self.connection = self.client.listen.v1.connect(
+            # SDK v5.3.1 uses async context manager pattern for websocket connections
+            # The context manager returns an AsyncV1SocketClient that we use for the session
+            # We'll store the context manager for later cleanup
+            from deepgram.core.events import EventType
+
+            self._connection_context = self.client.listen.v1.connect(
                 model=self.model,
                 language=language,
                 smart_format=smart_format,
@@ -141,26 +156,27 @@ class StreamingSTTService:
                 **kwargs,
             )
 
-            # Enter the context manager
-            self.connection = self.connection.__enter__()
+            # Enter the async context manager to get the connection
+            self.connection = await self._connection_context.__aenter__()
+            logger.debug("Deepgram connection established")
 
-            # Register event handlers
-            self.connection.on("open", self._on_open)
-            self.connection.on("message", self._on_transcript)
-            self.connection.on("metadata", self._on_metadata)
-            self.connection.on("error", self._on_error)
-            self.connection.on("close", self._on_close)
-            self.connection.on("speech_started", self._on_speech_started)
-            self.connection.on("utterance_end", self._on_utterance_end)
+            # Register event handlers using EventType enum
+            # Available events: OPEN, MESSAGE, ERROR, CLOSE
+            self.connection.on(EventType.OPEN, self._on_open)
+            self.connection.on(EventType.MESSAGE, self._on_transcript)
+            self.connection.on(EventType.ERROR, self._on_error)
+            self.connection.on(EventType.CLOSE, self._on_close)
+            logger.debug("Registered event handlers")
 
-            # Start listening
-            self.connection.start_listening()
-            
-            # Give it a moment to connect
-            await asyncio.sleep(0.1)
-            
-            if True:
-                raise StreamingSTTServiceError("Failed to start Deepgram connection")
+            # Start listening in a background task
+            import asyncio
+
+            self._listen_task = asyncio.create_task(self.connection.start_listening())
+            logger.debug("Started listening task")
+
+            # NOTE: Do NOT wait here! Deepgram expects audio within ~1 second.
+            # The application must call send_audio() immediately after start_stream() returns.
+            # If no audio is sent quickly, Deepgram will close with NET0001 timeout error.
 
             self.is_connected = True
 
@@ -193,7 +209,16 @@ class StreamingSTTService:
             raise StreamingSTTServiceError("No active streaming connection")
 
         try:
-            self.connection.send_media(audio_data)
+            # Check if websocket is still open
+            if hasattr(self.connection, "_websocket") and hasattr(
+                self.connection._websocket, "closed"
+            ):
+                if self.connection._websocket.closed:
+                    self.is_connected = False
+                    raise StreamingSTTServiceError("Deepgram websocket has closed")
+
+            # SDK v5.3.1 send_media() accepts raw bytes directly
+            await self.connection.send_media(audio_data)
             return True
 
         except Exception as e:
@@ -206,19 +231,45 @@ class StreamingSTTService:
     async def close_stream(self) -> None:
         """
         Close the streaming transcription session.
-        Sends finalize signal to get any remaining transcripts.
+        Sends CloseStream message to force server to process remaining audio.
         """
         if not self.is_connected:
             logger.warning("No active stream to close")
             return
 
         try:
+            self.is_connected = False
+
             if self.connection:
-                # Finalize to get any remaining transcripts
-                self.connection.send_finalize()
-                # Exit context manager
-                self.connection.__exit__(None, None, None)
-                self.is_connected = False
+                try:
+                    # Send CloseStream message to force server to process remaining audio
+                    # and return final transcription results
+                    await self.connection._send({"type": "CloseStream"})
+                    logger.debug("Sent CloseStream message to Deepgram")
+
+                    # Give server a moment to process and send final results
+                    await asyncio.sleep(0.1)
+                except Exception as close_error:
+                    # Non-critical - log but continue with cleanup
+                    logger.debug(f"Could not send CloseStream: {close_error}")
+
+                # Cancel the listening task
+                if hasattr(self, "_listen_task") and self._listen_task:
+                    self._listen_task.cancel()
+                    try:
+                        await self._listen_task
+                    except asyncio.CancelledError:
+                        pass
+                    logger.debug("Cancelled listening task")
+
+                # Exit the async context manager - this closes the websocket properly
+                if hasattr(self, "_connection_context") and self._connection_context:
+                    try:
+                        await self._connection_context.__aexit__(None, None, None)
+                        logger.debug("Exited Deepgram connection context")
+                    except Exception as exit_error:
+                        logger.debug(f"Error exiting context manager: {exit_error}")
+
                 logger.info("Streaming STT connection closed")
 
         except Exception as e:
@@ -226,6 +277,8 @@ class StreamingSTTService:
         finally:
             self.is_connected = False
             self.connection = None
+            self._connection_context = None
+            self._listen_task = None
 
     def _on_open(self, *args, **kwargs):
         """Handle connection open event"""
@@ -236,11 +289,14 @@ class StreamingSTTService:
         try:
             # In v5.3.1, message is passed differently
             message = args[0] if args else kwargs.get("message")
+
             if not message:
+                logger.warning("Received empty message from Deepgram")
                 return
 
             # Check if it's a transcript message
             msg_type = getattr(message, "type", None)
+
             if msg_type != "Results":
                 return
 
@@ -248,11 +304,11 @@ class StreamingSTTService:
             channel = getattr(message, "channel", None)
             if not channel:
                 return
-                
+
             alternatives = getattr(channel, "alternatives", [])
             if not alternatives:
                 return
-                
+
             alternative = alternatives[0]
             transcript = getattr(alternative, "transcript", "")
 
@@ -261,18 +317,20 @@ class StreamingSTTService:
                 return
 
             # Build metadata
+            is_final = message.is_final if hasattr(message, "is_final") else False
+            speech_final = (
+                message.speech_final if hasattr(message, "speech_final") else False
+            )
+            confidence = (
+                alternative.confidence if hasattr(alternative, "confidence") else 0.0
+            )
+
             metadata = {
-                "is_final": result.is_final if hasattr(result, "is_final") else False,
-                "speech_final": (
-                    result.speech_final if hasattr(result, "speech_final") else False
-                ),
-                "confidence": (
-                    alternative.confidence
-                    if hasattr(alternative, "confidence")
-                    else 0.0
-                ),
-                "duration": result.duration if hasattr(result, "duration") else 0.0,
-                "start": result.start if hasattr(result, "start") else 0.0,
+                "is_final": is_final,
+                "speech_final": speech_final,
+                "confidence": confidence,
+                "duration": message.duration if hasattr(message, "duration") else 0.0,
+                "start": message.start if hasattr(message, "start") else 0.0,
             }
 
             # Add word-level data if available
@@ -286,6 +344,12 @@ class StreamingSTTService:
                     }
                     for word in alternative.words
                 ]
+
+            # Log transcript with key info only
+            final_indicator = "FINAL" if is_final else "interim"
+            logger.info(
+                f"TRANSCRIPT ({final_indicator}): '{transcript}' (confidence: {confidence:.2%})"
+            )
 
             # Call transcript callback
             if self.on_transcript_callback:
@@ -317,10 +381,20 @@ class StreamingSTTService:
 
     def _on_error(self, *args, **kwargs):
         """Handle error event"""
-        error = kwargs.get("error", "Unknown error")
+        error = kwargs.get("error", args[0] if args else "Unknown error")
         error_msg = str(error)
 
         logger.error(f"Deepgram error: {error_msg}")
+        logger.error(f"Error details - args: {args}, kwargs: {kwargs}")
+
+        # Check if it's a connection close error
+        if "1011" in error_msg or "internal error" in error_msg.lower():
+            logger.error(
+                "Connection closed with code 1011 (internal error). "
+                "This usually indicates: invalid API key, model not available, "
+                "invalid audio parameters, or account billing issue. "
+                f"Current model: '{self.model}', API key ends with: ...{self.api_key[-4:]}"
+            )
 
         if self.on_error_callback:
             self.on_error_callback(error_msg)
@@ -342,6 +416,9 @@ class StreamingSTTService:
         """Send keepalive to maintain connection"""
         if self.connection and self.is_connected:
             try:
-                await self.connection.keep_alive()
+                from deepgram.listen.v1.types import ListenV1KeepAlive
+
+                self.connection.send_keep_alive(ListenV1KeepAlive(type="KeepAlive"))
+                logger.debug("Sent keepalive")
             except Exception as e:
                 logger.error(f"Failed to send keepalive: {e}")

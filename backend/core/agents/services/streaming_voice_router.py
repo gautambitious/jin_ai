@@ -10,6 +10,7 @@ Optimized for low-latency voice interactions with:
 import logging
 from typing import Dict, Any, Optional, AsyncGenerator
 import re
+import asyncio
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -218,6 +219,7 @@ class StreamingVoiceRouter:
         session_id: str = "default",
         metadata: Optional[Dict[str, Any]] = None,
         route_hint: Optional[str] = None,
+        parallel_routing: bool = True,  # NEW: Enable parallel routing + LLM
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Stream response for final transcript.
@@ -243,6 +245,65 @@ class StreamingVoiceRouter:
         try:
             metadata = metadata or {}
 
+            # PARALLEL OPTIMIZATION: Start LLM and routing simultaneously
+            if parallel_routing and not route_hint:
+                logger.info("Starting parallel routing + LLM generation...")
+                
+                # Start both tasks in parallel
+                routing_task = asyncio.create_task(self._quick_route(transcript))
+                llm_buffer = []
+                llm_task = asyncio.create_task(self._buffer_llm_stream(transcript, llm_buffer))
+                
+                # Wait for routing decision (should be fast)
+                route_decision, agent_name = await routing_task
+                
+                # Yield routing decision immediately
+                yield {
+                    "type": "route",
+                    "content": "",
+                    "route": agent_name if route_decision == "AGENT" else "DIRECT",
+                    "metadata": {"routing_decision": route_decision},
+                }
+                
+                if route_decision == "DIRECT":
+                    # Use the already-streaming LLM response!
+                    logger.info("Routing chose DIRECT - using buffered LLM stream")
+                    
+                    # Wait for LLM buffering to complete
+                    await llm_task
+                    
+                    # Yield all buffered tokens
+                    for token_data in llm_buffer:
+                        yield token_data
+                    
+                    return
+                else:
+                    # Cancel the LLM task - we're using an agent instead
+                    logger.info(f"Routing chose AGENT: {agent_name} - discarding LLM stream")
+                    llm_task.cancel()
+                    try:
+                        await llm_task
+                    except asyncio.CancelledError:
+                        pass
+                    
+                    # Execute agent
+                    try:
+                        response = self.agent_system.execute(agent_name, transcript)
+                        response = self._make_voice_friendly(response)
+                        yield {
+                            "type": "complete",
+                            "content": response,
+                            "route": agent_name,
+                            "metadata": {"agent_name": agent_name},
+                        }
+                    except Exception as e:
+                        logger.error(f"Agent execution failed: {e}", exc_info=True)
+                        # Fallback to direct LLM (restart it)
+                        async for chunk in self._stream_direct_response(transcript):
+                            yield chunk
+                    return
+            
+            # ORIGINAL PATH: Sequential routing (when parallel disabled or route_hint provided)
             # Determine routing
             if route_hint and route_hint != "DIRECT":
                 # Use pre-detected route
@@ -295,6 +356,17 @@ class StreamingVoiceRouter:
                 "metadata": {"error": str(e)},
             }
 
+    async def _buffer_llm_stream(self, transcript: str, buffer: list) -> None:
+        """Buffer LLM stream tokens for parallel routing."""
+        try:
+            async for chunk in self._stream_direct_response(transcript):
+                buffer.append(chunk)
+        except asyncio.CancelledError:
+            logger.debug("LLM buffering cancelled (agent route chosen)")
+            raise
+        except Exception as e:
+            logger.error(f"Error buffering LLM stream: {e}")
+    
     async def _quick_route(self, transcript: str) -> tuple[str, Optional[str]]:
         """
         Quick routing decision using cached prompt.

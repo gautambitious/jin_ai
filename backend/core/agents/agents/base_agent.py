@@ -3,7 +3,11 @@
 from typing import Dict, Any, List, Optional
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain_core.prompts import (
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+    PromptTemplate,
+)
 from langchain_core.tools import BaseTool
 from langchain_core.runnables import Runnable
 from abc import ABC, abstractmethod
@@ -77,13 +81,9 @@ class BaseCustomAgent(ABC):
         """
         # Convert prompt to system message if needed
         system_message = self.PROMPT_TEMPLATE
-        
+
         # Use create_agent with new signature
-        agent = create_agent(
-            self.llm,
-            self.tools,
-            system_prompt=system_message
-        )
+        agent = create_agent(self.llm, self.tools, system_prompt=system_message)
         return agent
 
     def execute(self, user_input: str) -> Dict[str, Any]:
@@ -97,7 +97,10 @@ class BaseCustomAgent(ABC):
             Agent's response dictionary
         """
         if not self.executor:
-            return {"error": "No tools available for this agent", "output": "No tools configured"}
+            return {
+                "error": "No tools available for this agent",
+                "output": "No tools configured",
+            }
 
         try:
             result = self.executor.invoke({"input": user_input})

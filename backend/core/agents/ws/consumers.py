@@ -497,7 +497,9 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
                             # Extract response text
                             response_text = response.get("response", "")
-                            routing_decision = response.get("routing_decision", "unknown")
+                            routing_decision = response.get(
+                                "routing_decision", "unknown"
+                            )
 
                             logger.info(
                                 f"[{self.connection_id}] Voice Router response "

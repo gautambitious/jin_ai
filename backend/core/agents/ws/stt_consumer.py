@@ -234,9 +234,14 @@ class STTConsumer(AsyncWebsocketConsumer):
                             if response_text:
                                 try:
                                     async_to_sync(broadcast_tts_message)(response_text)
-                                    logger.info(f"Broadcasted TTS response: {response_text[:50]}...")
+                                    logger.info(
+                                        f"Broadcasted TTS response: {response_text[:50]}..."
+                                    )
                                 except Exception as tts_error:
-                                    logger.error(f"Error broadcasting TTS: {tts_error}", exc_info=True)
+                                    logger.error(
+                                        f"Error broadcasting TTS: {tts_error}",
+                                        exc_info=True,
+                                    )
 
                         except Exception as e:
                             logger.error(
