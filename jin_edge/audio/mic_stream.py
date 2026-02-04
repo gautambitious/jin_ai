@@ -9,8 +9,10 @@ import sounddevice as sd
 import numpy as np
 import logging
 from typing import Any, Generator, Optional, Callable, Tuple
+
 try:
     from scipy import signal
+
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
@@ -18,14 +20,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def check_sample_rate_support(device: Optional[int] = None, target_rate: int = 16000) -> Tuple[bool, int]:
+def check_sample_rate_support(
+    device: Optional[int] = None, target_rate: int = 16000
+) -> Tuple[bool, int]:
     """
     Check if device supports target sample rate, return native rate if not.
-    
+
     Args:
         device: Device index or None for default
         target_rate: Desired sample rate (default: 16000)
-        
+
     Returns:
         Tuple of (is_supported, native_rate_to_use)
         - If supported: (True, target_rate)
@@ -38,7 +42,7 @@ def check_sample_rate_support(device: Optional[int] = None, target_rate: int = 1
     except Exception as e:
         # Device doesn't support target rate, find what it does support
         logger.warning(f"Device doesn't support {target_rate}Hz: {e}")
-        
+
         # Try common sample rates
         common_rates = [44100, 48000, 22050, 32000, 8000]
         for rate in common_rates:
@@ -48,12 +52,14 @@ def check_sample_rate_support(device: Optional[int] = None, target_rate: int = 1
                 return False, rate
             except:
                 continue
-        
+
         # Fallback to device default
         try:
-            device_info: dict = dict(sd.query_devices(device, kind='input'))  # type: ignore
-            default_rate = int(device_info['default_samplerate'])
-            logger.info(f"Using device default {default_rate}Hz with resampling to {target_rate}Hz")
+            device_info: dict = dict(sd.query_devices(device, kind="input"))  # type: ignore
+            default_rate = int(device_info["default_samplerate"])
+            logger.info(
+                f"Using device default {default_rate}Hz with resampling to {target_rate}Hz"
+            )
             return False, default_rate
         except:
             # Last resort - just try 44100
@@ -98,9 +104,11 @@ class MicStream:
         self.chunk_duration_ms = chunk_duration_ms
 
         # Check if device supports target rate
-        self.rate_supported, self.capture_rate = check_sample_rate_support(device, sample_rate)
+        self.rate_supported, self.capture_rate = check_sample_rate_support(
+            device, sample_rate
+        )
         self.needs_resampling = not self.rate_supported
-        
+
         if self.needs_resampling:
             if not HAS_SCIPY:
                 raise RuntimeError(
@@ -109,14 +117,17 @@ class MicStream:
                 )
             # Calculate resampling ratio
             from math import gcd
+
             g = gcd(self.capture_rate, self.target_rate)
             self.resample_up = self.target_rate // g
             self.resample_down = self.capture_rate // g
-            logger.info(f"Resampling enabled: {self.capture_rate}Hz → {self.target_rate}Hz (ratio {self.resample_up}/{self.resample_down})")
-            
+            logger.info(
+                f"Resampling enabled: {self.capture_rate}Hz → {self.target_rate}Hz (ratio {self.resample_up}/{self.resample_down})"
+            )
+
             # Buffer for resampling (to handle partial frames)
             self.resample_buffer = np.array([], dtype=np.int16)
-        
+
         # Use capture rate for device, target rate for output chunks
         self.sample_rate = self.capture_rate
         self.chunk_frames = int(self.capture_rate * chunk_duration_ms / 1000)
@@ -161,7 +172,7 @@ class MicStream:
                         frames = self._resample_chunk(frames)
                         if frames is None:
                             continue  # Not enough data yet
-                    
+
                     # Convert numpy array to raw bytes
                     pcm_bytes = frames.tobytes()
                     yield pcm_bytes
@@ -176,36 +187,40 @@ class MicStream:
     def _resample_chunk(self, frames: np.ndarray) -> Optional[np.ndarray]:
         """
         Resample audio chunk from capture_rate to target_rate.
-        
+
         Args:
             frames: Input frames at capture_rate
-            
+
         Returns:
             Resampled frames at target_rate, or None if not enough data
         """
         # Flatten if stereo (though we expect mono)
         if len(frames.shape) > 1:
             frames = frames.flatten()
-        
+
         # Add to buffer
         self.resample_buffer = np.concatenate([self.resample_buffer, frames])
-        
+
         # Calculate how many input samples we need for one output chunk
-        input_samples_needed = int(self.target_chunk_frames * self.resample_down / self.resample_up)
-        
+        input_samples_needed = int(
+            self.target_chunk_frames * self.resample_down / self.resample_up
+        )
+
         if len(self.resample_buffer) < input_samples_needed:
             return None  # Not enough data yet
-        
+
         # Take exactly what we need from buffer
         input_chunk = self.resample_buffer[:input_samples_needed]
         self.resample_buffer = self.resample_buffer[input_samples_needed:]
-        
+
         # Resample using polyphase filtering (efficient)
-        resampled = signal.resample_poly(input_chunk, self.resample_up, self.resample_down)
-        
+        resampled = signal.resample_poly(
+            input_chunk, self.resample_up, self.resample_down
+        )
+
         # Convert back to int16
         resampled_int16 = resampled.astype(np.int16)
-        
+
         return resampled_int16.reshape(-1, 1)  # Return as column vector for consistency
 
     def stop(self):
