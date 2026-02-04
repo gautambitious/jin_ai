@@ -12,14 +12,12 @@ import asyncio
 import logging
 import signal
 import sys
-from typing import Union
 from audio.buffer import AudioBuffer
 from audio.player import AudioPlayer
 from protocol.audio import AudioStreamHandler
 from ws.client import WebSocketClient
 from control.push_to_talk import PushToTalkController
 from control.wakeword_streamer import WakeWordStreamer
-from control.streaming_wakeword import StreamingWakeWordController
 from led.controller import LEDController
 import env_vars
 
@@ -59,7 +57,7 @@ class JinEdgeClient:
         )
         self.ws_client: WebSocketClient | None = None
         self.push_to_talk: PushToTalkController | None = None
-        self.wakeword_streamer: Union[WakeWordStreamer, StreamingWakeWordController, None] = None
+        self.wakeword_streamer: WakeWordStreamer | None = None
         self.enable_push_to_talk = enable_push_to_talk
         self.enable_wakeword = enable_wakeword
         self.running = False
@@ -127,13 +125,11 @@ class JinEdgeClient:
                     channels=env_vars.AUDIO_CHANNELS,
                     silence_threshold=500,
                     led_controller=self.led_controller,
-                    protocol_handler=self.protocol_handler,
                 )
                 # Register message callback with protocol handler
-                self.protocol_handler.on_message = self.wakeword_streamer._on_server_message
-                # Don't disable LED control yet - allow welcome audio to show LED feedback
-                # Will be managed dynamically during streaming/playback
-                logger.debug("StreamingWakeWordController initialized with dynamic LED control")
+                self.protocol_handler.on_message = (
+                    self.wakeword_streamer._on_server_message
+                )
             else:
                 logger.info("🎤 Enabling wake word mode (Say 'hey jin')...")
                 self.wakeword_streamer = WakeWordStreamer(
